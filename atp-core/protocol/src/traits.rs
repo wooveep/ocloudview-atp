@@ -45,12 +45,12 @@ pub trait Protocol: Send + Sync {
     async fn is_connected(&self) -> bool;
 
     /// 获取协议名称
-    fn name(&self) -> &str {
+    fn name(&self) -> String {
         match self.protocol_type() {
-            ProtocolType::QMP => "qmp",
-            ProtocolType::QGA => "qga",
-            ProtocolType::VirtioSerial(ref name) => name,
-            ProtocolType::Spice => "spice",
+            ProtocolType::QMP => "qmp".to_string(),
+            ProtocolType::QGA => "qga".to_string(),
+            ProtocolType::VirtioSerial(name) => name,
+            ProtocolType::Spice => "spice".to_string(),
         }
     }
 }

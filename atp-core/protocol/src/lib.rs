@@ -8,7 +8,7 @@ pub mod qmp;
 pub mod qga;
 pub mod custom;
 
-pub use traits::{Protocol, ProtocolType};
+pub use traits::{Protocol, ProtocolType, ProtocolBuilder};
 pub use registry::ProtocolRegistry;
 
 use thiserror::Error;

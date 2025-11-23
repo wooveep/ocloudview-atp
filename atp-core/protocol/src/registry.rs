@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-use crate::{Protocol, ProtocolBuilder, ProtocolError, ProtocolType, Result};
+use crate::{Protocol, ProtocolBuilder, ProtocolError, Result};
 
 /// 协议注册表
 ///
