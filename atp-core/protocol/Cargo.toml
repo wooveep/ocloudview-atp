@@ -1,0 +1,29 @@
+[package]
+name = "atp-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ATP 协议层 - 统一协议抽象接口"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+virt = { workspace = true }
+async-trait = { workspace = true }
+
+# 传输层依赖
+atp-transport = { path = "../transport" }
+
+# Base64 编解码
+base64 = "0.21"
+
+# 协议特定
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
