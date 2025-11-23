@@ -1,0 +1,43 @@
+# 压力测试场景：循环创建删除测试
+name: "循环创建删除桌面池"
+description: "循环创建和删除桌面池，测试系统稳定性"
+
+tags:
+  - stress
+  - stability
+  - loop
+
+steps:
+  # 循环 10 次
+  - type: loop
+    count: 10
+    steps:
+      # 创建桌面池
+      - type: vdi_action
+        action: create_desk_pool
+        name: "循环测试桌面池-${loop.index}"
+        template_id: "template-001"
+        count: 5
+        capture_output: "desk_pool"
+
+      # 等待
+      - type: wait
+        duration: 10s
+
+      # 启用桌面池
+      - type: vdi_action
+        action: enable_desk_pool
+        pool_id: "${desk_pool.id}"
+
+      # 等待
+      - type: wait
+        duration: 5s
+
+      # 删除桌面池
+      - type: vdi_action
+        action: delete_desk_pool
+        pool_id: "${desk_pool.id}"
+
+      # 等待清理
+      - type: wait
+        duration: 5s

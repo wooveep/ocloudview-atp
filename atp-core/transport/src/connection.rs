@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{sleep, Duration};
+use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use virt::connect::Connect;
 
@@ -43,6 +43,90 @@ pub struct HostConnection {
 
     /// 心跳任务取消通道
     heartbeat_shutdown: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+
+    /// 监控指标
+    metrics: Arc<ConnectionMetrics>,
+}
+
+/// 连接监控指标
+pub struct ConnectionMetrics {
+    /// 当前活跃使用数（正在使用该连接的操作数）
+    active_uses: Arc<RwLock<u32>>,
+
+    /// 总请求数
+    total_requests: Arc<RwLock<u64>>,
+
+    /// 错误计数
+    error_count: Arc<RwLock<u64>>,
+
+    /// 最后错误时间
+    last_error: Arc<Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+
+    /// 连接创建时间
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ConnectionMetrics {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            active_uses: Arc::new(RwLock::new(0)),
+            total_requests: Arc::new(RwLock::new(0)),
+            error_count: Arc::new(RwLock::new(0)),
+            last_error: Arc::new(Mutex::new(None)),
+            created_at: chrono::Utc::now(),
+        })
+    }
+
+    /// 获取当前活跃使用数
+    pub async fn active_uses(&self) -> u32 {
+        *self.active_uses.read().await
+    }
+
+    /// 获取总请求数
+    pub async fn total_requests(&self) -> u64 {
+        *self.total_requests.read().await
+    }
+
+    /// 获取错误计数
+    pub async fn error_count(&self) -> u64 {
+        *self.error_count.read().await
+    }
+
+    /// 获取最后错误时间
+    pub async fn last_error(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        *self.last_error.lock().await
+    }
+
+    /// 获取连接创建时间
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    /// 增加请求计数
+    async fn increment_request(&self) {
+        *self.total_requests.write().await += 1;
+    }
+
+    /// 增加活跃使用数
+    #[allow(dead_code)]
+    async fn increment_active_uses(&self) {
+        *self.active_uses.write().await += 1;
+    }
+
+    /// 减少活跃使用数
+    #[allow(dead_code)]
+    async fn decrement_active_uses(&self) {
+        let mut uses = self.active_uses.write().await;
+        if *uses > 0 {
+            *uses -= 1;
+        }
+    }
+
+    /// 记录错误
+    async fn record_error(&self) {
+        *self.error_count.write().await += 1;
+        *self.last_error.lock().await = Some(chrono::Utc::now());
+    }
 }
 
 impl HostConnection {
@@ -61,6 +145,7 @@ impl HostConnection {
             config,
             reconnect_attempts: Arc::new(RwLock::new(0)),
             heartbeat_shutdown: Arc::new(Mutex::new(None)),
+            metrics: ConnectionMetrics::new(),
         }
     }
 
@@ -77,21 +162,24 @@ impl HostConnection {
 
         let conn_result = tokio::time::timeout(
             timeout,
-            tokio::task::spawn_blocking(move || Connect::open(&uri))
+            tokio::task::spawn_blocking(move || Connect::open(Some(&uri)))
         ).await;
 
         let conn = match conn_result {
             Ok(Ok(Ok(conn))) => conn,
             Ok(Ok(Err(e))) => {
                 *self.state.lock().await = ConnectionState::Failed;
+                self.metrics.record_error().await;
                 return Err(TransportError::ConnectionFailed(e.to_string()));
             }
             Ok(Err(_)) => {
                 *self.state.lock().await = ConnectionState::Failed;
+                self.metrics.record_error().await;
                 return Err(TransportError::ConnectionFailed("任务失败".to_string()));
             }
             Err(_) => {
                 *self.state.lock().await = ConnectionState::Failed;
+                self.metrics.record_error().await;
                 return Err(TransportError::Timeout);
             }
         };
@@ -121,7 +209,7 @@ impl HostConnection {
 
         // 关闭连接
         let mut conn_guard = self.connection.lock().await;
-        if let Some(conn) = conn_guard.take() {
+        if let Some(mut conn) = conn_guard.take() {
             let _ = tokio::task::spawn_blocking(move || conn.close()).await;
         }
 
@@ -153,10 +241,18 @@ impl HostConnection {
             return Err(TransportError::Disconnected);
         }
 
+        // 更新指标
+        self.metrics.increment_request().await;
+
         // 更新最后活跃时间
         *self.last_active.lock().await = chrono::Utc::now();
 
         Ok(Arc::clone(&self.connection))
+    }
+
+    /// 获取监控指标
+    pub fn metrics(&self) -> Arc<ConnectionMetrics> {
+        Arc::clone(&self.metrics)
     }
 
     /// 获取主机信息
@@ -239,24 +335,12 @@ impl HostConnection {
         let interval = self.config.heartbeat_interval();
         let state = Arc::clone(&self.state);
         let connection = Arc::clone(&self.connection);
-        let reconnect_attempts = Arc::clone(&self.reconnect_attempts);
         let host_id = self.host_info.id.clone();
         let auto_reconnect = self.config.auto_reconnect;
 
         // 创建取消通道
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         *self.heartbeat_shutdown.lock().await = Some(tx);
-
-        // 创建自身的 Arc 引用用于重连
-        let self_clone = Arc::new(HostConnection {
-            host_info: self.host_info.clone(),
-            connection: Arc::clone(&self.connection),
-            state: Arc::clone(&self.state),
-            last_active: Arc::clone(&self.last_active),
-            config: Arc::clone(&self.config),
-            reconnect_attempts: Arc::clone(&self.reconnect_attempts),
-            heartbeat_shutdown: Arc::clone(&self.heartbeat_shutdown),
-        });
 
         // 启动心跳任务
         tokio::spawn(async move {
@@ -292,15 +376,10 @@ impl HostConnection {
                             *state.lock().await = ConnectionState::Disconnected;
 
                             // 如果启用了自动重连，触发重连
+                            // 注意：这里我们只是标记状态，实际重连会在下次 get_connection 时触发
+                            // 或者用户可以手动调用 reconnect_with_backoff
                             if auto_reconnect {
-                                info!("主机 {} 开始自动重连...", host_id);
-                                let self_for_reconnect = Arc::clone(&self_clone);
-                                tokio::spawn(async move {
-                                    if let Err(e) = self_for_reconnect.reconnect_with_backoff().await {
-                                        error!("主机 {} 自动重连失败: {}", self_for_reconnect.host_info.id, e);
-                                    }
-                                });
-                                break; // 退出心跳循环，重连成功后会创建新的心跳任务
+                                info!("主机 {} 连接断开，需要重连", host_id);
                             }
                         } else {
                             debug!("主机 {} 连接正常", host_id);

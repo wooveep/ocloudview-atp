@@ -112,6 +112,7 @@ impl Default for PoolConfig {
             max_connections_per_host: default_max_connections_per_host(),
             min_connections_per_host: default_min_connections_per_host(),
             idle_timeout: default_idle_timeout(),
+            selection_strategy: SelectionStrategy::default(),
         }
     }
 }

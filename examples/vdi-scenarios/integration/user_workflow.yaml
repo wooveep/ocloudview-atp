@@ -1,0 +1,76 @@
+# 集成场景：用户工作流测试
+name: "用户登录与使用场景"
+description: "模拟用户登录、使用虚拟桌面、执行任务的完整流程"
+
+tags:
+  - integration
+  - user-workflow
+  - end-to-end
+
+steps:
+  # 步骤 1: 用户登录
+  - type: vdi_action
+    action: user_login
+    username: "test_user"
+    password: "test_password"
+
+  # 步骤 2: 获取用户分配的虚拟机
+  - type: vdi_action
+    action: get_user_domain
+    user_id: "test_user"
+    capture_output: "user_domain"
+
+  # 步骤 3: 启动虚拟机
+  - type: vdi_action
+    action: start_domain
+    domain_id: "${user_domain.id}"
+
+  # 步骤 4: 等待虚拟机启动
+  - type: wait
+    duration: 10s
+
+  # 步骤 5: 连接到虚拟机
+  - type: virtualization_action
+    action: connect
+    domain_id: "${user_domain.id}"
+
+  # 步骤 6: 模拟用户工作 - 打开记事本
+  - type: virtualization_action
+    action: send_keyboard
+    keys: ["win+r"]  # 打开运行对话框
+
+  - type: wait
+    duration: 1s
+
+  - type: virtualization_action
+    action: send_keyboard
+    text: "notepad"
+
+  - type: virtualization_action
+    action: send_keyboard
+    keys: ["enter"]
+
+  # 步骤 7: 编辑文档
+  - type: wait
+    duration: 2s
+
+  - type: virtualization_action
+    action: send_keyboard
+    text: "This is a test document created by OCloudView ATP."
+
+  # 步骤 8: 保存文档
+  - type: virtualization_action
+    action: send_keyboard
+    keys: ["ctrl+s"]
+
+  - type: wait
+    duration: 1s
+
+  # 步骤 9: 关闭应用
+  - type: virtualization_action
+    action: send_keyboard
+    keys: ["alt+f4"]
+
+  # 步骤 10: 用户注销
+  - type: vdi_action
+    action: user_logout

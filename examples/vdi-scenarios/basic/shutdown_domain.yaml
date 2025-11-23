@@ -1,0 +1,17 @@
+# 基础场景：关闭虚拟机
+name: "关闭虚拟机"
+description: "关闭指定的虚拟机"
+
+steps:
+  - type: vdi_action
+    action: shutdown_domain
+    domain_id: "vm-001"
+
+  - type: wait
+    duration: 10s
+
+  - type: verify
+    condition: domain_status
+    domain_id: "vm-001"
+    expected_status: "shutdown"
+    timeout: 30s

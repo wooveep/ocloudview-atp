@@ -1,0 +1,57 @@
+# 压力测试场景：桌面池并发启动测试
+name: "桌面池并发启动测试"
+description: "创建包含 50 个虚拟机的桌面池，并发启动所有虚拟机"
+
+tags:
+  - stress
+  - performance
+  - concurrent
+
+timeout: 600  # 10 分钟超时
+
+steps:
+  # 步骤 1: 创建大型桌面池
+  - type: vdi_action
+    action: create_desk_pool
+    name: "压力测试桌面池-50VMs"
+    template_id: "template-001"
+    count: 50
+    capture_output: "desk_pool"
+
+  # 步骤 2: 等待桌面池准备就绪
+  - type: wait
+    duration: 60s
+
+  # 步骤 3: 启用桌面池
+  - type: vdi_action
+    action: enable_desk_pool
+    pool_id: "${desk_pool.id}"
+
+  # 步骤 4: 并发启动所有虚拟机
+  - type: vdi_action
+    action: start_all_domains
+    pool_id: "${desk_pool.id}"
+    concurrent: true
+    max_concurrency: 10  # 最多 10 个并发
+
+  # 步骤 5: 验证所有虚拟机启动
+  - type: verify
+    condition: all_domains_running
+    pool_id: "${desk_pool.id}"
+    timeout: 300s  # 5 分钟超时
+
+  # 步骤 6: 等待稳定
+  - type: wait
+    duration: 30s
+
+  # 步骤 7: 对每个虚拟机执行简单的键盘输入测试
+  - type: virtualization_action
+    action: send_keyboard_to_all
+    pool_id: "${desk_pool.id}"
+    text: "Stress test"
+    verify: true
+
+  # 步骤 8: 清理 - 删除桌面池
+  - type: vdi_action
+    action: delete_desk_pool
+    pool_id: "${desk_pool.id}"

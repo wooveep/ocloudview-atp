@@ -1,0 +1,72 @@
+# 集成场景：桌面池创建与键盘测试
+name: "桌面池创建与键盘输入测试"
+description: "创建桌面池，启动虚拟机，并进行键盘输入测试"
+
+tags:
+  - integration
+  - keyboard
+  - end-to-end
+
+steps:
+  # 步骤 1: 创建桌面池
+  - type: vdi_action
+    action: create_desk_pool
+    name: "集成测试桌面池"
+    template_id: "template-001"
+    count: 2
+    capture_output: "desk_pool"
+
+  # 步骤 2: 等待桌面池准备就绪
+  - type: wait
+    duration: 30s
+
+  # 步骤 3: 启用桌面池
+  - type: vdi_action
+    action: enable_desk_pool
+    pool_id: "${desk_pool.id}"
+
+  # 步骤 4: 获取桌面池中的虚拟机列表
+  - type: vdi_action
+    action: get_desk_pool_domains
+    pool_id: "${desk_pool.id}"
+    capture_output: "domains"
+
+  # 步骤 5: 启动第一个虚拟机
+  - type: vdi_action
+    action: start_domain
+    domain_id: "${domains[0].id}"
+
+  # 步骤 6: 等待虚拟机启动
+  - type: wait
+    duration: 10s
+
+  # 步骤 7: 验证虚拟机状态
+  - type: verify
+    condition: domain_status
+    domain_id: "${domains[0].id}"
+    expected_status: "running"
+
+  # 步骤 8: 建立虚拟化层连接
+  - type: virtualization_action
+    action: connect
+    domain_id: "${domains[0].id}"
+
+  # 步骤 9: 发送键盘输入
+  - type: virtualization_action
+    action: send_keyboard
+    text: "Hello from OCloudView ATP!"
+    verify: true
+
+  # 步骤 10: 等待输入完成
+  - type: wait
+    duration: 2s
+
+  # 步骤 11: 关闭虚拟机
+  - type: vdi_action
+    action: shutdown_domain
+    domain_id: "${domains[0].id}"
+
+  # 步骤 12: 删除桌面池
+  - type: vdi_action
+    action: delete_desk_pool
+    pool_id: "${desk_pool.id}"

@@ -8,7 +8,7 @@ pub mod pool;
 pub mod manager;
 
 pub use config::{TransportConfig, PoolConfig, ReconnectConfig, SelectionStrategy};
-pub use connection::{HostConnection, ConnectionState};
+pub use connection::{HostConnection, ConnectionState, ConnectionMetrics};
 pub use pool::{ConnectionPool, ConnectionPoolStats};
 pub use manager::TransportManager;
 

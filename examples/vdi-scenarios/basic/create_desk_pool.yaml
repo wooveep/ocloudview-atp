@@ -1,0 +1,18 @@
+# 基础场景：创建桌面池
+name: "创建桌面池"
+description: "通过 VDI API 创建桌面池"
+
+steps:
+  - type: vdi_action
+    action: create_desk_pool
+    name: "测试桌面池-basic"
+    template_id: "template-001"
+    count: 2
+    capture_output: "desk_pool"
+
+  - type: wait
+    duration: 10s
+
+  - type: verify
+    condition: desk_pool_created
+    pool_id: "${desk_pool.id}"

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Mutex};
 use tracing::{debug, info, warn};
 
 use crate::{HostConnection, HostInfo, PoolConfig, Result, SelectionStrategy, TransportConfig, TransportError};
@@ -23,6 +23,9 @@ pub struct ConnectionPool {
 
     /// 传输配置（用于创建连接）
     transport_config: Arc<TransportConfig>,
+
+    /// 管理任务取消通道
+    management_shutdown: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
 impl ConnectionPool {
@@ -33,11 +36,17 @@ impl ConnectionPool {
 
     /// 创建新的连接池（指定传输配置）
     pub fn with_transport_config(config: PoolConfig, transport_config: Arc<TransportConfig>) -> Self {
-        Self {
+        let pool = Self {
             hosts: Arc::new(RwLock::new(HashMap::new())),
             config,
             transport_config,
-        }
+            management_shutdown: Arc::new(Mutex::new(None)),
+        };
+
+        // 启动管理任务
+        pool.start_management_task();
+
+        pool
     }
 
     /// 添加主机
@@ -154,19 +163,39 @@ impl ConnectionPool {
             return Err(TransportError::PoolExhausted);
         }
 
-        // 简化版：选择第一个已连接的连接
-        // 在实际实现中，应该跟踪每个连接的活跃使用计数
-        for (i, conn) in host_conns.connections.iter().enumerate() {
-            if conn.is_alive().await {
-                debug!(
-                    "最少连接策略选择主机 {} 的连接 {}",
-                    host_id, i
-                );
-                return Ok(Arc::clone(conn));
+        // 找到活跃使用数最少的连接
+        let mut best_conn: Option<(Arc<HostConnection>, u32)> = None;
+
+        for conn in &host_conns.connections {
+            // 只考虑已连接的连接
+            if !conn.is_alive().await {
+                continue;
+            }
+
+            let active_uses = conn.metrics().active_uses().await;
+
+            match best_conn {
+                None => {
+                    best_conn = Some((Arc::clone(conn), active_uses));
+                }
+                Some((_, current_min)) => {
+                    if active_uses < current_min {
+                        best_conn = Some((Arc::clone(conn), active_uses));
+                    }
+                }
             }
         }
 
-        // 如果没有已连接的，返回第一个
+        // 如果找到了活跃连接，返回它
+        if let Some((conn, active_uses)) = best_conn {
+            debug!(
+                "最少连接策略选择主机 {} 的连接，活跃使用数: {}",
+                host_id, active_uses
+            );
+            return Ok(conn);
+        }
+
+        // 如果没有活跃连接，返回第一个
         debug!(
             "最少连接策略选择主机 {} 的连接 0 (无活跃连接)",
             host_id
@@ -243,11 +272,18 @@ impl ConnectionPool {
         for (host_id, host_conns) in hosts.iter() {
             let total = host_conns.connections.len();
             let mut active = 0;
+            let mut total_requests = 0u64;
+            let mut total_errors = 0u64;
+            let mut total_active_uses = 0u32;
 
             for conn in &host_conns.connections {
                 if conn.is_alive().await {
                     active += 1;
                 }
+                let metrics = conn.metrics();
+                total_requests += metrics.total_requests().await;
+                total_errors += metrics.error_count().await;
+                total_active_uses += metrics.active_uses().await;
             }
 
             stats.insert(
@@ -256,11 +292,191 @@ impl ConnectionPool {
                     total_connections: total,
                     active_connections: active,
                     selection_strategy: self.config.selection_strategy,
+                    total_requests,
+                    total_errors,
+                    total_active_uses,
                 },
             );
         }
 
         stats
+    }
+
+    /// 启动管理任务（自动扩缩容和空闲连接清理）
+    fn start_management_task(&self) {
+        let hosts = Arc::clone(&self.hosts);
+        let config = self.config.clone();
+        let transport_config = Arc::clone(&self.transport_config);
+
+        // 创建取消通道
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+
+        // 保存取消通道
+        let shutdown = Arc::clone(&self.management_shutdown);
+        tokio::spawn(async move {
+            *shutdown.lock().await = Some(tx);
+        });
+
+        // 启动管理任务
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        debug!("执行连接池管理任务");
+
+                        let mut hosts_guard = hosts.write().await;
+
+                        for (host_id, host_conns) in hosts_guard.iter_mut() {
+                            // 1. 清理空闲连接
+                            Self::cleanup_idle_connections(
+                                host_id,
+                                host_conns,
+                                config.idle_timeout(),
+                                config.min_connections_per_host,
+                            ).await;
+
+                            // 2. 自动扩容（如果所有连接都在使用中）
+                            Self::scale_up_if_needed(
+                                host_id,
+                                host_conns,
+                                config.max_connections_per_host,
+                                Arc::clone(&transport_config),
+                            ).await;
+                        }
+                    }
+                    _ = &mut rx => {
+                        info!("连接池管理任务已停止");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// 清理空闲连接
+    async fn cleanup_idle_connections(
+        host_id: &str,
+        host_conns: &mut HostConnections,
+        idle_timeout: tokio::time::Duration,
+        min_connections: usize,
+    ) {
+        let now = chrono::Utc::now();
+        let mut to_remove = Vec::new();
+
+        // 找出需要移除的空闲连接
+        for (i, conn) in host_conns.connections.iter().enumerate() {
+            // 保留最小数量的连接
+            if host_conns.connections.len() - to_remove.len() <= min_connections {
+                break;
+            }
+
+            // 检查连接是否空闲超时
+            let last_active = conn.last_active().await;
+            let idle_duration = now.signed_duration_since(last_active);
+
+            if idle_duration.num_seconds() as u64 > idle_timeout.as_secs() {
+                // 连接空闲超时，标记移除
+                to_remove.push(i);
+                debug!(
+                    "主机 {} 的连接 {} 空闲超时，将被移除 (空闲时间: {}秒)",
+                    host_id,
+                    i,
+                    idle_duration.num_seconds()
+                );
+            }
+        }
+
+        // 移除空闲连接
+        for &index in to_remove.iter().rev() {
+            let conn = host_conns.connections.remove(index);
+            let _ = conn.disconnect().await;
+        }
+
+        if !to_remove.is_empty() {
+            info!(
+                "主机 {} 清理了 {} 个空闲连接，剩余 {} 个连接",
+                host_id,
+                to_remove.len(),
+                host_conns.connections.len()
+            );
+        }
+    }
+
+    /// 自动扩容（如果需要）
+    async fn scale_up_if_needed(
+        host_id: &str,
+        host_conns: &mut HostConnections,
+        max_connections: usize,
+        transport_config: Arc<TransportConfig>,
+    ) {
+        // 如果已达到最大连接数，不扩容
+        if host_conns.connections.len() >= max_connections {
+            return;
+        }
+
+        // 检查是否所有连接都在高负载下
+        let mut high_load_count = 0;
+        for conn in &host_conns.connections {
+            let metrics = conn.metrics();
+            let active_uses = metrics.active_uses().await;
+
+            // 如果活跃使用数 > 5，认为是高负载（这个阈值可以配置）
+            if active_uses > 5 {
+                high_load_count += 1;
+            }
+        }
+
+        // 如果超过 80% 的连接处于高负载，则扩容
+        let high_load_ratio = high_load_count as f64 / host_conns.connections.len() as f64;
+        if high_load_ratio > 0.8 {
+            // 扩容：添加一个新连接
+            let host_info = host_conns.connections[0].host_info().clone();
+            let new_conn = HostConnection::with_config(host_info, transport_config);
+
+            // 异步建立连接
+            let new_conn_arc = Arc::new(new_conn);
+            let new_conn_clone = Arc::clone(&new_conn_arc);
+            tokio::spawn(async move {
+                if let Err(e) = new_conn_clone.connect().await {
+                    warn!("新连接建立失败: {}", e);
+                }
+            });
+
+            host_conns.connections.push(new_conn_arc);
+
+            info!(
+                "主机 {} 自动扩容：添加新连接 (当前连接数: {}，高负载率: {:.2})",
+                host_id,
+                host_conns.connections.len(),
+                high_load_ratio
+            );
+        }
+    }
+
+    /// 停止管理任务
+    #[allow(dead_code)]
+    async fn stop_management_task(&self) {
+        let mut shutdown_guard = self.management_shutdown.lock().await;
+        if let Some(tx) = shutdown_guard.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl Drop for ConnectionPool {
+    fn drop(&mut self) {
+        // 尝试停止管理任务
+        // 注意：由于 Drop 是同步的，我们不能直接 await
+        // 这里只是尽力而为，实际清理会在任务自然结束时完成
+        let shutdown = Arc::clone(&self.management_shutdown);
+        tokio::spawn(async move {
+            let mut guard = shutdown.lock().await;
+            if let Some(tx) = guard.take() {
+                let _ = tx.send(());
+            }
+        });
     }
 }
 
@@ -270,4 +486,7 @@ pub struct ConnectionPoolStats {
     pub total_connections: usize,
     pub active_connections: usize,
     pub selection_strategy: SelectionStrategy,
+    pub total_requests: u64,
+    pub total_errors: u64,
+    pub total_active_uses: u32,
 }

@@ -1,0 +1,17 @@
+# 基础场景：启动虚拟机
+name: "启动虚拟机"
+description: "启动指定的虚拟机"
+
+steps:
+  - type: vdi_action
+    action: start_domain
+    domain_id: "vm-001"
+
+  - type: wait
+    duration: 10s
+
+  - type: verify
+    condition: domain_status
+    domain_id: "vm-001"
+    expected_status: "running"
+    timeout: 30s

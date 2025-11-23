@@ -4,16 +4,15 @@
 
 ### 系统要求
 
-**Host 控制端：**
-- Linux (推荐 Ubuntu 20.04+)
+**开发环境：**
+- Linux (推荐 Ubuntu 20.04+ 或 WSL2)
 - Rust 1.70+
 - QEMU/KVM 6.0+
 - Libvirt 7.0+
 
-**Guest 客户端：**
-- Linux 或 Windows 虚拟机
-- Node.js 16+ (Web Agent)
-- Rust 1.70+ (Native Agent)
+**可选（用于 VDI 平台测试）：**
+- OCloudView VDI 平台访问权限
+- HTTP 客户端工具
 
 ### 安装依赖
 
@@ -27,167 +26,289 @@ sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
 # 安装 Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 安装 Node.js
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs
+# 安装开发工具
+sudo apt install build-essential pkg-config libssl-dev
 
 # 将当前用户加入 libvirt 组
 sudo usermod -aG libvirt $USER
 sudo usermod -aG kvm $USER
 
 # 重新登录以应用组权限
+newgrp libvirt
 ```
 
-## 构建项目
+## 项目结构
 
-### 1. 构建 Test Controller
+项目采用 Cargo Workspace 管理，包含以下核心模块：
+
+```
+ocloudview-atp/
+├── atp-core/                 # 核心框架 (Workspace)
+│   ├── transport/            # 传输层：连接管理
+│   ├── protocol/             # 协议层：QMP/QGA/VirtioSerial
+│   ├── vdiplatform/          # VDI 平台客户端
+│   ├── orchestrator/         # 场景编排器
+│   └── executor/             # 执行器（开发中）
+├── examples/                 # 示例和测试场景
+├── docs/                     # 文档
+├── config/                   # 配置文件
+└── TODO.md                   # 开发任务清单
+```
+
+### 核心模块说明
+
+#### 1. transport - 传输层
+连接管理和主机通信：
+- **HostConnection**: 单主机连接管理（自动重连、心跳）
+- **ConnectionPool**: 连接池（多策略、扩缩容）
+- **TransportManager**: 多主机管理和并发执行
+
+#### 2. protocol - 协议层
+虚拟化协议实现：
+- **QMP Protocol**: QEMU Machine Protocol（键盘、鼠标）
+- **QGA Protocol**: QEMU Guest Agent（命令执行）
+- **VirtioSerial**: 自定义协议（开发中）
+- **SPICE**: 预留接口
+
+#### 3. vdiplatform - VDI 平台
+OCloudView VDI 平台集成：
+- **VdiClient**: HTTP API 客户端
+- **DomainApi**: 虚拟机管理
+- **DeskPoolApi**: 桌面池管理
+- **HostApi/ModelApi/UserApi**: 其他 API
+
+#### 4. orchestrator - 场景编排
+测试场景定义和编排：
+- **TestScenario**: 场景定义（YAML/JSON）
+- **ScenarioExecutor**: 场景执行引擎
+- **VdiVirtualizationAdapter**: VDI 与虚拟化层适配
+
+## 快速开始
+
+### 1. 克隆项目
 
 ```bash
-cd test-controller
-cargo build --release
+git clone https://github.com/wooveep/ocloudview-atp.git
+cd ocloudview-atp
+```
+
+### 2. 构建项目
+
+```bash
+# 构建整个工作区
+cargo build --workspace
+
+# 构建特定模块
+cd atp-core
+cargo build --package atp-transport
+cargo build --package atp-protocol
+cargo build --package atp-vdiplatform
 
 # 运行测试
-cargo test
+cargo test --workspace
 
-# 运行（需要 Libvirt 环境）
-sudo cargo run --release
+# 检查代码
+cargo clippy --workspace
+cargo fmt --check
 ```
 
-### 2. 构建 Web Guest Agent
+### 3. 验证环境
 
 ```bash
-cd guest-agent-web/server
-npm install
+# 检查 Libvirt 连接
+virsh list --all
 
-# 开发模式
-npm run dev
+# 检查 QEMU 版本
+qemu-system-x86_64 --version
 
-# 生产模式
-npm start
-```
-
-### 3. 构建 Native Guest Agent
-
-```bash
-cd guest-agent-native
-cargo build --release
-
-# Linux 需要 root 权限访问 /dev/input
-sudo ./target/release/guest-agent-native --server ws://host-ip:8081
+# 测试虚拟机操作
+virsh start test-vm-01
+virsh list --all
 ```
 
 ## 开发工作流
 
-### 1. 设置虚拟机
+### 传输层开发
 
-使用 `virt-manager` 或命令行创建测试虚拟机：
+#### 创建和使用传输管理器
 
-```bash
-# 创建虚拟机（示例）
-virt-install \
-  --name test-vm-01 \
-  --ram 2048 \
-  --disk path=/var/lib/libvirt/images/test-vm-01.qcow2,size=20 \
-  --vcpus 2 \
-  --os-type linux \
-  --os-variant ubuntu20.04 \
-  --network bridge=virbr0 \
-  --graphics vnc \
-  --cdrom /path/to/ubuntu-20.04.iso
+```rust
+use atp_transport::{TransportManager, TransportConfig, HostInfo};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 创建传输管理器
+    let config = TransportConfig::default();
+    let manager = TransportManager::new(config);
+
+    // 添加主机
+    let host = HostInfo::new("host1", "192.168.1.100")
+        .with_uri("qemu+tcp://192.168.1.100/system");
+    manager.add_host(host).await?;
+
+    // 执行任务
+    manager.execute_on_host("host1", |conn| async move {
+        // 使用连接
+        println!("连接成功: {:?}", conn.host_info());
+        Ok(())
+    }).await?;
+
+    Ok(())
+}
 ```
 
-### 2. 查找 QMP Socket
+#### 配置连接池
 
-```bash
-# 列出所有虚拟机
-virsh list --all
+```rust
+use atp_transport::{TransportConfig, PoolConfig, SelectionStrategy};
 
-# 查看虚拟机 XML 配置
-virsh dumpxml test-vm-01 | grep monitor
-
-# QMP Socket 通常位于
-ls /var/lib/libvirt/qemu/domain-*-*/monitor.sock
+let config = TransportConfig {
+    pool: PoolConfig {
+        max_connections_per_host: 10,
+        min_connections_per_host: 2,
+        idle_timeout: 300,
+        selection_strategy: SelectionStrategy::LeastConnections,
+    },
+    connect_timeout: 30,
+    heartbeat_interval: 60,
+    auto_reconnect: true,
+    ..Default::default()
+};
 ```
 
-### 3. 手动测试 QMP
+### 协议层开发
 
-使用 `socat` 或 `nc` 手动连接 QMP Socket：
+#### 使用 QMP 协议
 
-```bash
-# 使用 socat
-sudo socat - UNIX-CONNECT:/var/lib/libvirt/qemu/domain-1-test-vm-01/monitor.sock
+```rust
+use atp_protocol::{QmpProtocol, QmpProtocolBuilder, Protocol};
 
-# 输入 QMP 命令
-{"execute": "qmp_capabilities"}
-{"execute": "query-status"}
-{"execute": "send-key", "arguments": {"keys": [{"type": "qcode", "data": "a"}]}}
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 创建协议
+    let builder = QmpProtocolBuilder::new();
+    let mut qmp = builder.build();
+
+    // 连接到 domain
+    qmp.connect(&domain).await?;
+
+    // 发送按键
+    qmp.send_key("a").await?;
+    qmp.send_keys(vec!["ctrl", "c"], None).await?;
+
+    // 查询状态
+    let status = qmp.query_status().await?;
+    println!("VM 状态: {:?}", status);
+
+    Ok(())
+}
 ```
 
-### 4. 运行完整测试流程
+#### 使用 QGA 协议
 
-```bash
-# 1. 启动虚拟机
-virsh start test-vm-01
+```rust
+use atp_protocol::{QgaProtocol, QgaProtocolBuilder, GuestExecCommand};
 
-# 2. 在虚拟机内启动 Guest Agent
-# (Web) 打开浏览器访问 http://localhost:8080/test.html
-# (Native) sudo ./guest-agent-native --server ws://host-ip:8081
+#[tokio::main]
+async fn main() -> Result<()> {
+    let builder = QgaProtocolBuilder::new().with_timeout(60);
+    let mut qga = builder.build();
 
-# 3. 在 Host 上启动 Test Controller
-cd test-controller
-sudo cargo run --release
+    qga.connect(&domain).await?;
+
+    // 执行 shell 命令
+    let result = qga.exec_shell("ls -la /tmp").await?;
+    if let Some(stdout) = result.decode_stdout() {
+        println!("输出: {}", stdout);
+    }
+
+    Ok(())
+}
 ```
 
-## 代码结构
+### VDI 平台开发
 
-### Test Controller
+#### 使用 VDI 客户端
 
-```
-test-controller/src/
-├── main.rs                 # 主程序入口
-├── qmp/                    # QMP 协议实现
-│   ├── mod.rs
-│   ├── client.rs          # QMP 客户端
-│   └── protocol.rs        # 协议定义
-├── libvirt/               # Libvirt 集成
-│   ├── mod.rs
-│   └── manager.rs         # Libvirt 管理器
-├── keymapping/            # 键值映射
-│   ├── mod.rs
-│   ├── layout.rs          # 键盘布局
-│   └── mapper.rs          # 映射器
-├── vm_actor/              # VM Actor
-│   ├── mod.rs
-│   ├── actor.rs           # Actor 实现
-│   └── message.rs         # 消息定义
-└── orchestrator/          # 测试编排
-    ├── mod.rs
-    └── orchestrator.rs    # 编排器
-```
+```rust
+use atp_vdiplatform::VdiClient;
 
-### Web Guest Agent
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 创建客户端
+    let mut client = VdiClient::new("http://192.168.1.11:8088");
 
-```
-guest-agent-web/
-├── server/
-│   ├── server.js          # WebSocket 服务器
-│   └── package.json
-└── client/
-    ├── test.html          # 测试页面
-    └── agent.js           # Agent 客户端
+    // 登录
+    client.login("admin", "password").await?;
+
+    // 创建虚拟机
+    let domain = client.domain()
+        .create(CreateDomainRequest {
+            name: "test-vm".to_string(),
+            // ... 其他参数
+        })
+        .await?;
+
+    // 启动虚拟机
+    client.domain().start(&domain.id).await?;
+
+    Ok(())
+}
 ```
 
-### Native Guest Agent
+### 场景编排开发
 
+#### 定义测试场景（YAML）
+
+```yaml
+name: "键盘输入测试"
+description: "测试虚拟机键盘输入功能"
+
+steps:
+  # 连接到虚拟机
+  - type: virtualization_action
+    action: connect
+    domain_id: "vm-001"
+
+  # 发送键盘输入
+  - type: virtualization_action
+    action: send_keyboard
+    text: "Hello World"
+
+  # 等待
+  - type: wait
+    duration: 2s
+
+  # 验证
+  - type: verify
+    condition: command_success
+    domain_id: "vm-001"
 ```
-guest-agent-native/src/
-├── main.rs                # 主程序
-├── capture/               # 输入捕获
-│   ├── mod.rs
-│   ├── linux.rs           # Linux evdev
-│   └── windows.rs         # Windows Hook
-└── websocket/             # WebSocket 客户端
-    └── mod.rs
+
+#### 执行场景
+
+```rust
+use atp_orchestrator::{TestScenario, ScenarioExecutor};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 加载场景
+    let scenario = TestScenario::from_yaml("examples/basic-keyboard.yaml")?;
+
+    // 创建执行器
+    let executor = ScenarioExecutor::new(
+        vdi_client,
+        transport_manager,
+        protocol_registry,
+    );
+
+    // 执行场景
+    let report = executor.execute(&scenario).await?;
+
+    println!("测试报告: {:#?}", report);
+
+    Ok(())
+}
 ```
 
 ## 调试技巧
@@ -195,14 +316,14 @@ guest-agent-native/src/
 ### 1. 启用详细日志
 
 ```bash
-# Rust 程序
-RUST_LOG=debug cargo run
+# 设置日志级别
+export RUST_LOG=debug
 
-# 查看 Libvirt 日志
-sudo journalctl -u libvirtd -f
+# 或针对特定模块
+export RUST_LOG=atp_transport=debug,atp_protocol=info
 
-# 查看 QEMU 日志
-sudo cat /var/log/libvirt/qemu/test-vm-01.log
+# 运行程序
+cargo run
 ```
 
 ### 2. 使用 Rust 调试器
@@ -211,107 +332,283 @@ sudo cat /var/log/libvirt/qemu/test-vm-01.log
 # 安装 rust-gdb
 rustup component add rust-src
 
-# 调试
-rust-gdb target/debug/test-controller
+# 调试程序
+rust-gdb target/debug/your-program
+
+# 或使用 VS Code / CLion 的图形调试器
 ```
 
-### 3. WebSocket 调试
+### 3. 检查 Libvirt 连接
 
-在浏览器开发者工具中查看 WebSocket 连接：
-- Chrome/Edge: F12 → Network → WS
-- Firefox: F12 → Network → WS
+```bash
+# 测试连接
+virsh -c qemu+tcp://192.168.1.100/system list
+
+# 查看虚拟机详情
+virsh dominfo vm-name
+
+# 查看 QMP Socket 路径
+virsh qemu-monitor-command vm-name --hmp info version
+```
 
 ### 4. 监控 QMP 通信
 
-使用 `socat` 创建 QMP 代理进行监控：
+使用 `socat` 创建 QMP 代理：
 
 ```bash
-# 创建代理
-sudo socat -v UNIX-LISTEN:/tmp/qmp-monitor.sock,fork \
-  UNIX-CONNECT:/var/lib/libvirt/qemu/domain-1-test/monitor.sock
+# 创建代理（需要 root 权限）
+sudo socat -v \
+  UNIX-LISTEN:/tmp/qmp-monitor.sock,fork \
+  UNIX-CONNECT:/var/lib/libvirt/qemu/domain-1-vm/monitor.sock
+
+# 然后修改程序连接到 /tmp/qmp-monitor.sock
+```
+
+### 5. 测试 QGA 命令
+
+```bash
+# 手动执行 QGA 命令
+virsh qemu-agent-command vm-name '{"execute":"guest-ping"}'
+
+# 获取 Guest 信息
+virsh qemu-agent-command vm-name '{"execute":"guest-info"}'
+
+# 执行命令
+virsh qemu-agent-command vm-name \
+  '{"execute":"guest-exec","arguments":{"path":"/bin/sh","arg":["-c","ls -la"],"capture-output":true}}'
 ```
 
 ## 常见问题
 
-### Q1: 无法连接到 QMP Socket
+### Q1: 编译错误 - virt crate 找不到 qemu_agent_command
 
-**解决方案：**
-1. 检查虚拟机是否运行：`virsh list`
-2. 检查 Socket 文件权限：`ls -l /var/lib/libvirt/qemu/domain-*/monitor.sock`
-3. 将用户加入 libvirt 组：`sudo usermod -aG libvirt $USER`
+**原因**: 未启用 `qemu` 特性
 
-### Q2: 按键注入失败
+**解决方案**:
+```toml
+# atp-core/Cargo.toml
+[workspace.dependencies]
+virt = { version = "0.4", features = ["qemu"] }
+```
 
-**解决方案：**
-1. 检查虚拟机是否有键盘设备：`virsh dumpxml test-vm | grep input`
-2. 确认 QEMU 版本支持 `send-key` 命令
-3. 检查键盘布局映射是否正确
+### Q2: 连接池连接数不足
 
-### Q3: Guest Agent 无法连接
+**解决方案**:
+```rust
+let config = TransportConfig {
+    pool: PoolConfig {
+        max_connections_per_host: 20,  // 增加最大连接数
+        min_connections_per_host: 5,   // 增加最小连接数
+        ..Default::default()
+    },
+    ..Default::default()
+};
+```
 
-**解决方案：**
-1. 检查网络连通性：`ping host-ip`
-2. 检查防火墙规则：`sudo ufw status`
-3. 确认 WebSocket 端口已开放：`netstat -tlnp | grep 8081`
+### Q3: QMP Socket 路径错误
 
-### Q4: Linux evdev 权限不足
+**问题**: 当前实现使用简化的路径模式
 
-**解决方案：**
+**临时解决方案**:
 ```bash
-# 查看输入设备
-ls -l /dev/input/
+# 1. 查找实际路径
+sudo find /var/lib/libvirt/qemu -name "monitor.sock"
 
-# 方法1：使用 root 运行
-sudo ./guest-agent-native
+# 2. 创建符号链接（临时）
+sudo ln -s /actual/path/monitor.sock /expected/path/monitor.sock
+```
 
-# 方法2：添加 udev 规则
-echo 'KERNEL=="event*", MODE="0666"' | sudo tee /etc/udev/rules.d/99-input.rules
-sudo udevadm control --reload-rules
+**长期解决方案**: 等待从 libvirt XML 读取路径的功能实现
+
+### Q4: 权限错误
+
+```bash
+# 确保用户在 libvirt 组
+groups | grep libvirt
+
+# 如果不在，添加用户
+sudo usermod -aG libvirt $USER
+newgrp libvirt
+
+# 检查 socket 权限
+sudo ls -l /var/lib/libvirt/qemu/
+```
+
+### Q5: VDI API 连接超时
+
+**解决方案**:
+```rust
+let config = VdiConfig {
+    timeout: Duration::from_secs(30),  // 增加超时时间
+    retry_times: 3,                     // 启用重试
+    ..Default::default()
+};
 ```
 
 ## 性能优化
 
-### 1. 减少延迟
+### 1. 连接池优化
 
-- 使用 `input-send-event` 替代 `send-key` 以获得更精确的时序控制
-- 调整 Tokio 运行时线程数：`tokio::runtime::Builder::new_multi_thread().worker_threads(8)`
+```rust
+// 使用最少连接策略以获得更好的负载均衡
+let config = PoolConfig {
+    selection_strategy: SelectionStrategy::LeastConnections,
+    max_connections_per_host: 10,
+    ..Default::default()
+};
+```
 
-### 2. 提高吞吐量
+### 2. 并发执行优化
 
-- 批量发送 QMP 命令
-- 使用连接池管理多个 QMP 连接
-- 启用 WebSocket 压缩
+```rust
+// 在多个主机上并发执行任务
+let results = manager.execute_on_hosts(
+    &["host1", "host2", "host3"],
+    |conn| async move {
+        // 任务逻辑
+        Ok(())
+    }
+).await;
+```
 
-### 3. 内存优化
+### 3. 协议调优
 
-- 限制事件日志大小
-- 使用循环缓冲区存储历史事件
-- 定期清理已完成的测试结果
+```rust
+// QGA: 调整超时时间
+let qga = QgaProtocolBuilder::new()
+    .with_timeout(120)  // 对于长时间运行的命令
+    .build();
+
+// 批量操作时减少等待时间
+```
+
+## 测试指南
+
+### 单元测试
+
+```bash
+# 运行所有单元测试
+cargo test --workspace
+
+# 运行特定模块测试
+cargo test --package atp-transport
+cargo test --package atp-protocol
+
+# 运行特定测试
+cargo test test_connection_pool
+
+# 显示测试输出
+cargo test -- --nocapture
+```
+
+### 集成测试
+
+```bash
+# 运行集成测试（需要 libvirt 环境）
+cargo test --test integration_tests -- --ignored
+
+# 或使用环境变量
+TEST_INTEGRATION=1 cargo test
+```
+
+### 性能测试
+
+```bash
+# 运行基准测试
+cargo bench --workspace
+
+# 或针对特定模块
+cargo bench --package atp-transport
+```
+
+## 代码规范
+
+### Rust 代码风格
+
+```bash
+# 格式化代码
+cargo fmt --all
+
+# 检查代码质量
+cargo clippy --all -- -D warnings
+
+# 检查未使用的依赖
+cargo machete
+```
+
+### 提交规范
+
+遵循 Conventional Commits：
+
+```
+feat: 添加新功能
+fix: 修复 bug
+docs: 文档更新
+refactor: 代码重构
+test: 测试相关
+chore: 构建/工具链更新
+```
+
+### 文档规范
+
+- 所有公共 API 必须有文档注释
+- 使用 `cargo doc` 生成文档
+- 包含使用示例
+
+```rust
+/// 创建新的传输管理器
+///
+/// # 示例
+///
+/// ```
+/// use atp_transport::TransportManager;
+///
+/// let manager = TransportManager::new(Default::default());
+/// ```
+pub fn new(config: TransportConfig) -> Self {
+    // ...
+}
+```
 
 ## 贡献指南
 
-1. Fork 本仓库
-2. 创建特性分支：`git checkout -b feature/my-feature`
-3. 提交更改：`git commit -am 'Add some feature'`
-4. 推送到分支：`git push origin feature/my-feature`
-5. 创建 Pull Request
+1. **Fork 项目** 并创建特性分支
+2. **遵循代码规范** （rustfmt + clippy）
+3. **添加测试** 覆盖新功能
+4. **更新文档** 包括 README 和 API 文档
+5. **提交 PR** 并说明变更内容
 
-### 代码风格
+### PR 检查清单
 
-- Rust: 遵循 `rustfmt` 标准
-- JavaScript: 遵循 ESLint 配置
-- 提交信息：遵循 Conventional Commits
-
-### 测试要求
-
-- 所有新功能必须包含单元测试
-- 集成测试覆盖率 > 80%
-- 性能测试验证关键路径
+- [ ] 代码通过 `cargo fmt` 和 `cargo clippy`
+- [ ] 所有测试通过
+- [ ] 添加了必要的单元测试
+- [ ] 更新了相关文档
+- [ ] 更新了 TODO.md（如适用）
 
 ## 参考资源
 
-- [QEMU QMP 文档](https://qemu.readthedocs.io/en/latest/interop/qmp-intro.html)
-- [Libvirt API 文档](https://libvirt.org/html/index.html)
+### 官方文档
+- [QEMU QMP 协议](https://qemu.readthedocs.io/en/latest/interop/qmp-intro.html)
+- [Libvirt API](https://libvirt.org/html/index.html)
 - [Tokio 异步运行时](https://tokio.rs/)
-- [Linux evdev 文档](https://www.kernel.org/doc/html/latest/input/input.html)
-- [Windows Hook API](https://docs.microsoft.com/en-us/windows/win32/winmsg/hooks)
+- [Rust 异步编程](https://rust-lang.github.io/async-book/)
+
+### 项目文档
+- [分层架构设计](LAYERED_ARCHITECTURE.md)
+- [连接模式设计](CONNECTION_MODES.md)
+- [阶段1实现总结](STAGE1_TRANSPORT_IMPLEMENTATION.md)
+- [阶段2实现总结](STAGE2_PROTOCOL_IMPLEMENTATION.md)
+- [VDI平台测试](VDI_PLATFORM_TESTING.md)
+- [QGA使用指南](QGA_GUIDE.md)
+
+### 相关库
+- [virt-rs](https://docs.rs/virt/) - Libvirt Rust 绑定
+- [reqwest](https://docs.rs/reqwest/) - HTTP 客户端
+- [serde](https://serde.rs/) - 序列化/反序列化
+- [tokio](https://tokio.rs/) - 异步运行时
+
+---
+
+**最后更新**: 2025-11-24
+**维护者**: OCloudView ATP Team
