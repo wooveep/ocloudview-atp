@@ -1,0 +1,49 @@
+[package]
+name = "guest-agent-native"
+version = "0.1.0"
+edition = "2021"
+authors = ["OCloudView ATP Team"]
+description = "原生 Guest Agent - 操作系统层面的按键捕获"
+
+[dependencies]
+# 异步运行时
+tokio = { version = "1.35", features = ["full"] }
+
+# 序列化/反序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# WebSocket 客户端
+tokio-tungstenite = "0.21"
+
+# 错误处理
+anyhow = "1.0"
+thiserror = "1.0"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 命令行参数解析
+clap = { version = "4.4", features = ["derive"] }
+
+# UUID 生成
+uuid = { version = "1.6", features = ["v4"] }
+
+# 时间处理
+chrono = "0.4"
+
+# 异步流处理
+futures-util = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux evdev 支持
+evdev = "0.12"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows API
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
