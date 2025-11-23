@@ -25,6 +25,19 @@ pub enum VmCommand {
     /// 运行测试用例
     RunTestCase { test_id: String },
 
+    // ========== QGA 命令 ==========
+    /// 执行 Shell 命令
+    ExecShellCommand { command: String },
+
+    /// 读取 Guest 文件内容
+    ReadGuestFile { path: String },
+
+    /// 写入 Guest 文件内容
+    WriteGuestFile { path: String, content: String },
+
+    /// 获取 Guest 操作系统信息
+    GetGuestOsInfo,
+
     /// 停止 Actor
     Shutdown,
 }
@@ -46,6 +59,24 @@ pub enum VmEvent {
 
     /// 测试用例完成
     TestCaseCompleted { test_id: String, passed: bool },
+
+    // ========== QGA 事件 ==========
+    /// Shell 命令执行完成
+    ShellCommandCompleted {
+        command: String,
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+    },
+
+    /// 文件读取完成
+    FileReadCompleted { path: String, content: String },
+
+    /// 文件写入完成
+    FileWriteCompleted { path: String },
+
+    /// Guest OS 信息
+    GuestOsInfoReceived { os_info: String },
 
     /// 错误发生
     Error { message: String },

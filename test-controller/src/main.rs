@@ -1,4 +1,5 @@
 mod qmp;
+mod qga;
 mod libvirt;
 mod keymapping;
 mod vm_actor;

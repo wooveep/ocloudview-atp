@@ -37,5 +37,8 @@ async-channel = "2.1"
 # 时间处理
 chrono = "0.4"
 
+# Base64 编码/解码
+base64 = "0.21"
+
 [dev-dependencies]
 mockall = "0.12"

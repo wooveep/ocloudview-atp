@@ -115,6 +115,18 @@ impl LibvirtManager {
             state: state.0,
         })
     }
+
+    /// 创建 QEMU Guest Agent 客户端
+    ///
+    /// 这是一个便捷方法，用于为指定的虚拟机创建 QGA 客户端。
+    /// QGA 客户端允许在 Guest 操作系统内执行命令和文件操作。
+    ///
+    /// # 前提条件
+    /// - Guest 必须安装并运行 qemu-guest-agent
+    /// - VM 必须配置 virtio-serial 设备
+    pub fn create_qga_client<'a>(&self, domain: &'a Domain) -> crate::qga::QgaClient<'a> {
+        crate::qga::QgaClient::new(domain)
+    }
 }
 
 /// 虚拟机信息
