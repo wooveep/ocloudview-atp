@@ -7,9 +7,9 @@ pub mod connection;
 pub mod pool;
 pub mod manager;
 
-pub use config::{TransportConfig, PoolConfig};
+pub use config::{TransportConfig, PoolConfig, ReconnectConfig, SelectionStrategy};
 pub use connection::{HostConnection, ConnectionState};
-pub use pool::ConnectionPool;
+pub use pool::{ConnectionPool, ConnectionPoolStats};
 pub use manager::TransportManager;
 
 use thiserror::Error;
