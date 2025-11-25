@@ -1,15 +1,54 @@
 //! ATP 协议层
 //!
-//! 提供统一的协议抽象接口，支持 QMP、QGA、自定义协议和 SPICE（预留）。
+//! 提供统一的协议抽象接口，支持 QMP、QGA、VirtioSerial 和 SPICE。
+//!
+//! ## 支持的协议
+//!
+//! - **QMP**: QEMU Machine Protocol，用于管理和监控虚拟机
+//! - **QGA**: QEMU Guest Agent，用于在虚拟机内部执行命令
+//! - **VirtioSerial**: 自定义 virtio-serial 协议支持
+//! - **SPICE**: 远程桌面协议，支持多通道（显示、输入、USB 重定向等）
 
 pub mod traits;
 pub mod registry;
 pub mod qmp;
 pub mod qga;
+pub mod virtio;
 pub mod custom;
+pub mod spice;
 
 pub use traits::{Protocol, ProtocolType, ProtocolBuilder};
 pub use registry::ProtocolRegistry;
+
+// 导出 VirtioSerial 相关类型
+pub use virtio::{
+    VirtioSerialProtocol,
+    VirtioSerialBuilder,
+    VirtioChannel,
+    ChannelInfo,
+    ProtocolHandler,
+    RawProtocolHandler,
+    JsonProtocolHandler,
+};
+
+// 导出 SPICE 相关类型
+pub use spice::{
+    SpiceProtocol,
+    SpiceProtocolBuilder,
+    SpiceClient,
+    SpiceConfig,
+    SpiceDiscovery,
+    SpiceVmInfo,
+    InputsChannel,
+    DisplayChannel,
+    UsbRedirChannel,
+    MouseButton,
+    MouseMode,
+    KeyModifiers,
+    DisplayConfig,
+    UsbDevice,
+    UsbFilter,
+};
 
 use thiserror::Error;
 

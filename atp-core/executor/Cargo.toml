@@ -25,5 +25,8 @@ serde_yaml = "0.9"
 # 异步通道
 async-channel = "2.1"
 
+# Libvirt 绑定
+virt = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

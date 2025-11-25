@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing::{info, Level};
 
 mod commands;
+mod config;
 
 #[derive(Parser)]
 #[command(name = "atp")]

@@ -31,4 +31,5 @@ colored = "2.1"
 indicatif = "0.17"
 
 # 配置文件
-config = "0.13"
+toml = "0.8"
+dirs = "5.0"

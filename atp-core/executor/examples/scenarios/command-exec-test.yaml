@@ -1,0 +1,46 @@
+name: "命令执行测试"
+description: "测试虚拟机内命令执行功能"
+tags:
+  - command
+  - qga
+  - test
+
+steps:
+  - name: "列出当前目录"
+    action:
+      type: exec_command
+      command: "ls -la"
+    timeout: 10
+
+  - name: "等待 2 秒"
+    action:
+      type: wait
+      duration: 2
+
+  - name: "查看系统信息"
+    action:
+      type: exec_command
+      command: "uname -a"
+    timeout: 10
+
+  - name: "等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+
+  - name: "检查磁盘空间"
+    action:
+      type: exec_command
+      command: "df -h"
+    timeout: 10
+
+  - name: "等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+
+  - name: "检查内存使用"
+    action:
+      type: exec_command
+      command: "free -h"
+    timeout: 10

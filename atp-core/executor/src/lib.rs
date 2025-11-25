@@ -5,8 +5,8 @@
 pub mod scenario;
 pub mod runner;
 
-pub use scenario::{Scenario, ScenarioStep};
-pub use runner::ScenarioRunner;
+pub use scenario::{Scenario, ScenarioStep, Action};
+pub use runner::{ScenarioRunner, ExecutionReport, StepReport, StepStatus};
 
 use thiserror::Error;
 
@@ -26,6 +26,12 @@ pub enum ExecutorError {
 
     #[error("传输错误: {0}")]
     TransportError(#[from] atp_transport::TransportError),
+
+    #[error("IO 错误: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("序列化错误: {0}")]
+    SerdeError(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExecutorError>;

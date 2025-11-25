@@ -1,0 +1,35 @@
+name: "基础键盘测试"
+description: "测试虚拟机键盘输入功能"
+tags:
+  - keyboard
+  - basic
+  - test
+
+steps:
+  - name: "发送单个按键 'a'"
+    action:
+      type: send_key
+      key: "a"
+    timeout: 5
+
+  - name: "等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+
+  - name: "发送文本 'Hello World'"
+    action:
+      type: send_text
+      text: "Hello World"
+    timeout: 10
+
+  - name: "等待 2 秒"
+    action:
+      type: wait
+      duration: 2
+
+  - name: "发送回车键"
+    action:
+      type: send_key
+      key: "ret"
+    timeout: 5
