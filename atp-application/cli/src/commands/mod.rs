@@ -5,3 +5,4 @@ pub mod keyboard;
 pub mod mouse;
 pub mod command;
 pub mod scenario;
+pub mod report;  // 启用报告命令

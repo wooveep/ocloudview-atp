@@ -10,7 +10,7 @@ pub mod report;
 pub use scenario::{TestScenario, TestStep, VdiAction, VirtualizationAction, VerifyCondition};
 pub use executor::ScenarioExecutor;
 pub use adapter::VdiVirtualizationAdapter;
-pub use report::{TestReport, StepResult};
+pub use report::{TestReport, StepResult, StepStatus};
 
 use thiserror::Error;
 

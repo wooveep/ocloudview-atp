@@ -51,6 +51,12 @@ enum Commands {
         #[command(subcommand)]
         action: ScenarioAction,
     },
+
+    /// 测试报告管理
+    Report {
+        #[command(subcommand)]
+        action: ReportAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -161,6 +167,64 @@ enum ScenarioAction {
     List,
 }
 
+#[derive(Subcommand)]
+pub enum ReportAction {
+    /// 列出测试报告
+    List {
+        /// 场景名称过滤
+        #[arg(short, long)]
+        scenario: Option<String>,
+
+        /// 只显示通过的
+        #[arg(short, long)]
+        passed: bool,
+
+        /// 只显示失败的
+        #[arg(short, long)]
+        failed: bool,
+
+        /// 限制数量
+        #[arg(short, long, default_value = "10")]
+        limit: i64,
+    },
+
+    /// 显示报告详情
+    Show {
+        /// 报告 ID
+        id: i64,
+    },
+
+    /// 导出报告
+    Export {
+        /// 报告 ID
+        id: i64,
+
+        /// 输出文件路径
+        #[arg(short, long)]
+        output: String,
+
+        /// 输出格式(json/yaml)
+        #[arg(short, long, default_value = "json")]
+        format: String,
+    },
+
+    /// 删除报告
+    Delete {
+        /// 报告 ID
+        id: i64,
+    },
+
+    /// 统计信息
+    Stats {
+        /// 场景名称
+        scenario: String,
+
+        /// 天数
+        #[arg(short, long, default_value = "30")]
+        days: i32,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -186,6 +250,7 @@ async fn main() -> Result<()> {
         Commands::Mouse { action } => commands::mouse::handle(action).await?,
         Commands::Command { action } => commands::command::handle(action).await?,
         Commands::Scenario { action } => commands::scenario::handle(action).await?,
+        Commands::Report { action } => commands::report::handle(action).await?,
     }
 
     Ok(())

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use crate::{Event, Result, VerifyResult};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VerifierType {
     Keyboard,
     Mouse,

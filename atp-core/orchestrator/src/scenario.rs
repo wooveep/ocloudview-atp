@@ -1,4 +1,26 @@
 //! 测试场景定义
+//!
+//! **当前存储方式**: YAML/JSON 文件
+//!
+//! **问题**:
+//! - 无法快速搜索和过滤场景
+//! - 无版本管理
+//! - 无执行统计关联
+//!
+//! **TODO: 实现双轨制存储** (优先级: 中)
+//!
+//! 建议方案:
+//! 1. 保留 YAML 文件用于开发和版本控制
+//! 2. 添加数据库存储用于运行时查询
+//! 3. 实现场景导入/导出功能:
+//!    - atp scenario import ./examples/vdi-scenarios/
+//!    - atp scenario export <name> --output scenario.yaml
+//! 4. 运行时优先从数据库加载,fallback 到文件
+//!
+//! 数据库表: scenarios (已定义)
+//! Repository: ScenarioRepository (已实现)
+//!
+//! 参考实现: docs/DATA_STORAGE_ANALYSIS.md - 建议 3
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

@@ -15,6 +15,7 @@ path = "src/main.rs"
 atp-transport = { workspace = true }
 atp-protocol = { workspace = true }
 atp-executor = { workspace = true }
+atp-storage = { path = "../../atp-core/storage" }  # 数据库支持
 
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -22,6 +23,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+chrono = { workspace = true }  # 时间处理
+serde_yaml = "0.9"  # YAML 支持
 
 # CLI 框架
 clap = { workspace = true }

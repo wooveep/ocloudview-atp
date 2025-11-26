@@ -1,4 +1,11 @@
 //! CLI 配置管理
+//!
+//! **数据存储方式**: TOML 文件 (~/.config/atp/config.toml)
+//! **建议**: 保持现状,主机数量较少时 TOML 文件更合适
+//!
+//! **未来优化** (当主机数 > 100 时):
+//! - 考虑迁移到数据库 (使用 atp-storage 的 hosts 表)
+//! - 提供导入/导出功能保持兼容性
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

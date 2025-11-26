@@ -5,6 +5,8 @@ members = [
     "executor",
     "vdiplatform",
     "orchestrator",
+    "storage",
+    "verification-server",
 ]
 
 resolver = "2"
@@ -40,3 +42,10 @@ chrono = "0.4"
 
 # 异步 trait
 async-trait = "0.1"
+
+# UUID
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# WebSocket
+tokio-tungstenite = "0.21"
+futures-util = "0.3"

@@ -8,6 +8,9 @@ pub use verifier::{Verifier, VerifierType};
 pub use transport::VerifierTransport;
 pub use event::{Event, VerifyResult};
 
+// 重新导出传输实现
+pub use transport::{WebSocketTransport, TcpTransport};
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]

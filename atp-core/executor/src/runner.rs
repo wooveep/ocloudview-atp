@@ -6,9 +6,11 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn, error};
 use tokio::time::timeout;
 use serde::{Deserialize, Serialize};
+use chrono::Utc;
 
 use atp_transport::TransportManager;
 use atp_protocol::{Protocol, ProtocolRegistry};
+use atp_storage::{Storage, TestReportRecord, ExecutionStepRecord};
 
 use crate::{Result, Scenario, ScenarioStep, Action, ExecutorError};
 
@@ -25,6 +27,9 @@ pub struct ScenarioRunner {
 
     /// 默认超时时间
     default_timeout: Duration,
+
+    /// 数据库存储 (可选)
+    storage: Option<Arc<Storage>>,
 }
 
 impl ScenarioRunner {
@@ -38,7 +43,14 @@ impl ScenarioRunner {
             protocol_registry,
             protocol_cache: HashMap::new(),
             default_timeout: Duration::from_secs(30),
+            storage: None,
         }
+    }
+
+    /// 设置数据库存储
+    pub fn with_storage(mut self, storage: Arc<Storage>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     /// 设置默认超时时间
@@ -94,6 +106,14 @@ impl ScenarioRunner {
             report.passed_count,
             report.steps_executed
         );
+
+        // 保存执行报告到数据库
+        if let Some(storage) = &self.storage {
+            if let Err(e) = self.save_report_to_db(storage, &report, start_time).await {
+                warn!("保存测试报告到数据库失败: {}", e);
+                // 不影响测试执行结果,继续返回报告
+            }
+        }
 
         Ok(report)
     }
@@ -196,6 +216,77 @@ impl ScenarioRunner {
         tokio::time::sleep(Duration::from_secs(duration)).await;
 
         Ok(StepReport::success(index, &format!("等待 {} 秒", duration)))
+    }
+
+    /// 保存报告到数据库
+    async fn save_report_to_db(
+        &self,
+        storage: &Storage,
+        report: &ExecutionReport,
+        start_time: Instant,
+    ) -> Result<i64> {
+        // 计算实际开始时间
+        let now = Utc::now();
+        let actual_start_time = now - chrono::Duration::milliseconds(report.duration_ms as i64);
+
+        // 转换为数据库记录
+        let test_report = TestReportRecord {
+            id: 0, // 数据库自动生成
+            scenario_name: report.scenario_name.clone(),
+            description: report.description.clone(),
+            start_time: actual_start_time,
+            end_time: Some(now),
+            duration_ms: Some(report.duration_ms as i64),
+            total_steps: report.steps_executed as i32,
+            success_count: report.passed_count as i32,
+            failed_count: report.failed_count as i32,
+            skipped_count: 0,
+            passed: report.passed,
+            tags: if report.tags.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&report.tags).map_err(|e| {
+                    ExecutorError::SerdeError(format!("Failed to serialize tags: {}", e))
+                })?)
+            },
+            created_at: now,
+        };
+
+        // 保存报告
+        let report_id = storage
+            .reports()
+            .create(&test_report)
+            .await
+            .map_err(|e| ExecutorError::DatabaseError(format!("Failed to save report: {}", e)))?;
+
+        // 保存步骤
+        let steps: Vec<ExecutionStepRecord> = report
+            .steps
+            .iter()
+            .map(|step| ExecutionStepRecord {
+                id: 0,
+                report_id,
+                step_index: step.step_index as i32,
+                description: step.description.clone(),
+                status: match step.status {
+                    StepStatus::Success => "Success".to_string(),
+                    StepStatus::Failed => "Failed".to_string(),
+                    StepStatus::Skipped => "Skipped".to_string(),
+                },
+                error: step.error.clone(),
+                duration_ms: Some(step.duration_ms as i64),
+                output: step.output.clone(),
+            })
+            .collect();
+
+        storage
+            .reports()
+            .create_steps(&steps)
+            .await
+            .map_err(|e| ExecutorError::DatabaseError(format!("Failed to save steps: {}", e)))?;
+
+        info!("测试报告已保存到数据库, ID: {}", report_id);
+        Ok(report_id)
     }
 }
 

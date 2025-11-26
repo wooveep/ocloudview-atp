@@ -18,6 +18,10 @@ async-trait = { workspace = true }
 # 依赖其他核心 crate
 atp-transport = { path = "../transport" }
 atp-protocol = { path = "../protocol" }
+atp-storage = { path = "../storage" }  # 数据库支持
+
+# 时间处理 (用于报告时间戳)
+chrono = { workspace = true }
 
 # YAML 支持
 serde_yaml = "0.9"

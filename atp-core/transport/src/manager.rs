@@ -188,6 +188,40 @@ impl TransportManager {
     pub async fn active_connection_count(&self, host_id: &str) -> Result<usize> {
         self.pool.active_connection_count(host_id).await
     }
+
+    // TODO: 数据库集成 - 添加性能指标持久化
+    //
+    // /// 保存连接指标到数据库
+    // pub async fn save_metrics(&self, storage: &atp_storage::Storage) -> Result<()> {
+    //     use chrono::Utc;
+    //     use atp_storage::ConnectionMetricRecord;
+    //
+    //     let stats = self.stats().await;
+    //
+    //     for (host_id, pool_stats) in stats {
+    //         let metrics = pool_stats.metrics();
+    //
+    //         let metric_record = ConnectionMetricRecord {
+    //             id: 0,
+    //             host_id: host_id.clone(),
+    //             timestamp: Utc::now(),
+    //             total_connections: pool_stats.total_connections as i32,
+    //             active_connections: pool_stats.active_connections as i32,
+    //             total_requests: metrics.total_requests as i64,
+    //             total_errors: metrics.total_errors as i64,
+    //             avg_response_time: None, // 可以计算平均响应时间
+    //         };
+    //
+    //         storage.metrics().create(&metric_record).await?;
+    //     }
+    //
+    //     Ok(())
+    // }
+    //
+    // 使用示例:
+    // let storage_manager = atp_storage::StorageManager::new("~/.config/atp/data.db").await?;
+    // let storage = atp_storage::Storage::from_manager(&storage_manager);
+    // manager.save_metrics(&storage).await?;
 }
 
 #[cfg(test)]

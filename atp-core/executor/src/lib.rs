@@ -32,6 +32,9 @@ pub enum ExecutorError {
 
     #[error("序列化错误: {0}")]
     SerdeError(String),
+
+    #[error("数据库错误: {0}")]
+    DatabaseError(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExecutorError>;
