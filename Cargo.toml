@@ -1,8 +1,5 @@
 [workspace]
-members = [
-    "test-controller",
-    "guest-agent-native",
-]
+members = []
 
 resolver = "2"
 
