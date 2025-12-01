@@ -53,7 +53,6 @@ impl StorageManager {
     }
 
     /// 创建内存数据库(用于测试)
-    #[cfg(test)]
     pub async fn new_in_memory() -> Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)

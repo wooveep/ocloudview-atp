@@ -15,7 +15,13 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use verifier_core::{
     Event, TcpTransport, Verifier, VerifierTransport, VerifierType, WebSocketTransport,
 };
+
+// 根据平台导入不同的验证器
+#[cfg(target_os = "linux")]
 use verifiers::{CommandVerifier, LinuxKeyboardVerifier, LinuxMouseVerifier};
+
+#[cfg(target_os = "windows")]
+use verifiers::{CommandVerifier, WindowsKeyboardVerifier, WindowsMouseVerifier};
 
 /// 自动获取 VM ID
 ///
@@ -192,7 +198,7 @@ impl AgentState {
                     #[cfg(target_os = "linux")]
                     match LinuxKeyboardVerifier::new() {
                         Ok(v) => {
-                            info!("启用键盘验证器");
+                            info!("启用键盘验证器 (Linux)");
                             verifiers.insert(VerifierType::Keyboard, Arc::new(v));
                         }
                         Err(e) => {
@@ -201,15 +207,21 @@ impl AgentState {
                     }
 
                     #[cfg(target_os = "windows")]
-                    {
-                        warn!("Windows 键盘验证器尚未实现");
+                    match WindowsKeyboardVerifier::new() {
+                        Ok(v) => {
+                            info!("启用键盘验证器 (Windows)");
+                            verifiers.insert(VerifierType::Keyboard, Arc::new(v));
+                        }
+                        Err(e) => {
+                            warn!("初始化键盘验证器失败: {}", e);
+                        }
                     }
                 }
                 VerifierTypeArg::Mouse => {
                     #[cfg(target_os = "linux")]
                     match LinuxMouseVerifier::new() {
                         Ok(v) => {
-                            info!("启用鼠标验证器");
+                            info!("启用鼠标验证器 (Linux)");
                             verifiers.insert(VerifierType::Mouse, Arc::new(v));
                         }
                         Err(e) => {
@@ -218,8 +230,14 @@ impl AgentState {
                     }
 
                     #[cfg(target_os = "windows")]
-                    {
-                        warn!("Windows 鼠标验证器尚未实现");
+                    match WindowsMouseVerifier::new() {
+                        Ok(v) => {
+                            info!("启用鼠标验证器 (Windows)");
+                            verifiers.insert(VerifierType::Mouse, Arc::new(v));
+                        }
+                        Err(e) => {
+                            warn!("初始化鼠标验证器失败: {}", e);
+                        }
                     }
                 }
                 VerifierTypeArg::Command => {

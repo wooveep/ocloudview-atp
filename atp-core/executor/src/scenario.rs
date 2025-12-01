@@ -12,6 +12,12 @@ pub struct Scenario {
     /// 场景描述
     pub description: Option<String>,
 
+    /// 目标主机 URI (可选,默认使用第一个可用主机)
+    pub target_host: Option<String>,
+
+    /// 目标虚拟机名称 (可选,如果未指定则需要在步骤中指定)
+    pub target_domain: Option<String>,
+
     /// 测试步骤
     pub steps: Vec<ScenarioStep>,
 
@@ -79,6 +85,10 @@ pub struct ScenarioStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
+    // ========================================
+    // 协议操作 (已实现)
+    // ========================================
+
     /// 发送按键
     SendKey { key: String },
 
@@ -96,6 +106,88 @@ pub enum Action {
 
     /// 自定义动作
     Custom { data: serde_json::Value },
+
+    // ========================================
+    // VDI 平台操作 (从 Orchestrator 迁移)
+    // ========================================
+
+    /// 创建桌面池
+    VdiCreateDeskPool {
+        name: String,
+        template_id: String,
+        count: u32,
+    },
+
+    /// 启用桌面池
+    VdiEnableDeskPool {
+        pool_id: String,
+    },
+
+    /// 禁用桌面池
+    VdiDisableDeskPool {
+        pool_id: String,
+    },
+
+    /// 删除桌面池
+    VdiDeleteDeskPool {
+        pool_id: String,
+    },
+
+    /// 启动虚拟机
+    VdiStartDomain {
+        domain_id: String,
+    },
+
+    /// 关闭虚拟机
+    VdiShutdownDomain {
+        domain_id: String,
+    },
+
+    /// 重启虚拟机
+    VdiRebootDomain {
+        domain_id: String,
+    },
+
+    /// 删除虚拟机
+    VdiDeleteDomain {
+        domain_id: String,
+    },
+
+    /// 绑定用户
+    VdiBindUser {
+        domain_id: String,
+        user_id: String,
+    },
+
+    /// 获取桌面池虚拟机列表
+    VdiGetDeskPoolDomains {
+        pool_id: String,
+    },
+
+    // ========================================
+    // 验证步骤 (从 Orchestrator 迁移)
+    // ========================================
+
+    /// 验证虚拟机状态
+    VerifyDomainStatus {
+        domain_id: String,
+        expected_status: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
+
+    /// 验证所有虚拟机运行中
+    VerifyAllDomainsRunning {
+        pool_id: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
+
+    /// 验证命令执行成功
+    VerifyCommandSuccess {
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
 }
 
 #[cfg(test)]
@@ -128,6 +220,8 @@ steps:
         let scenario = Scenario {
             name: "测试场景".to_string(),
             description: Some("描述".to_string()),
+            target_host: None,
+            target_domain: Some("test-vm".to_string()),
             tags: vec!["test".to_string()],
             steps: vec![
                 ScenarioStep {

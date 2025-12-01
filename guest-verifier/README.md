@@ -80,20 +80,32 @@ Guest 验证器是一个运行在虚拟机内部的 Agent，用于验证主机�
      - 退出码验证
      - 输出内容匹配
 
-3. **Agent 特性**
+3. **Windows 验证器** ✅ **新增**
+   - ✅ 键盘验证器（Windows Hook API）
+     - Low-Level Keyboard Hook (WH_KEYBOARD_LL)
+     - 全局键盘事件监听
+     - 完整的虚拟键码映射表（字母、数字、功能键、修饰键等）
+     - 多线程架构（Hook 线程 + Tokio 异步运行时）
+   - ✅ 鼠标验证器（Windows Hook API）
+     - Low-Level Mouse Hook (WH_MOUSE_LL)
+     - 支持鼠标按键（左键、右键、中键）
+     - 支持鼠标移动事件
+     - 鼠标坐标记录
+   - ✅ 命令验证器
+     - 跨平台支持（与 Linux 共用实现）
+     - 支持 cmd.exe 和 PowerShell 命令
+
+4. **Agent 特性**
    - ✅ CLI 参数解析
    - ✅ 可配置的验证器启用/禁用
    - ✅ 可配置的日志级别
    - ✅ 自动重连（可配置间隔）
    - ✅ 优雅的错误处理
+   - ✅ 跨平台支持（Linux + Windows）
 
 ### 待实现 📋
 
-1. **Windows 验证器**
-   - [ ] 键盘验证器（Windows Hook API）
-   - [ ] 鼠标验证器（Windows Hook API）
-
-2. **高级功能**
+1. **高级功能**
    - [ ] TLS/SSL 支持（WebSocket wss://）
    - [ ] 认证机制
    - [ ] 性能指标上报
@@ -103,10 +115,19 @@ Guest 验证器是一个运行在虚拟机内部的 Agent，用于验证主机�
 
 ### 编译
 
+#### Linux
 ```bash
 cd guest-verifier
 cargo build --release
 ```
+
+#### Windows
+```powershell
+cd guest-verifier
+cargo build --release --target x86_64-pc-windows-msvc
+```
+
+详细构建说明请参考 [Windows 部署指南](../docs/WINDOWS_VERIFIER_DEPLOYMENT.md)。
 
 ### 运行
 
@@ -334,13 +355,31 @@ sudo usermod -a -G input $USER
   - transport/websocket.rs: ~200 行
   - transport/tcp.rs: ~200 行
   - 其他: ~100 行
-- **verifier-agent**: ~950 行
-  - verifiers/keyboard.rs: ~300 行
-  - verifiers/mouse.rs: ~300 行
-  - verifiers/command.rs: ~250 行
-  - main.rs: ~350 行 (含 VM ID 自动检测)
+- **verifier-agent**: ~1,900 行（包含 Windows 支持）
+  - verifiers/keyboard.rs: ~520 行（Linux ~300行 + Windows ~220行）
+  - verifiers/mouse.rs: ~510 行（Linux ~300行 + Windows ~210行）
+  - verifiers/command.rs: ~250 行（跨平台）
+  - main.rs: ~390 行（含 VM ID 自动检测和跨平台支持）
 
-**总计**: ~1,450 行代码
+**总计**: ~2,400 行代码（跨平台：Linux + Windows）
+
+## 平台支持
+
+| 功能 | Linux | Windows |
+|------|-------|---------|
+| 键盘验证 | ✅ evdev | ✅ Hook API |
+| 鼠标验证 | ✅ evdev | ✅ Hook API |
+| 命令验证 | ✅ | ✅ |
+| WebSocket | ✅ | ✅ |
+| TCP | ✅ | ✅ |
+| 自动 VM ID | ✅ DMI/主机名 | ✅ 主机名 |
+
+## 文档
+
+- **Linux 部署**: 见本 README
+- **Windows 部署**: [docs/WINDOWS_VERIFIER_DEPLOYMENT.md](../docs/WINDOWS_VERIFIER_DEPLOYMENT.md)
+- **实现指南**: [docs/WINDOWS_VERIFIER_IMPLEMENTATION.md](../docs/WINDOWS_VERIFIER_IMPLEMENTATION.md)
+- **ATP 平台集成**: 见下方 "ATP 平台集成" 部分
 
 ## ATP 平台集成
 

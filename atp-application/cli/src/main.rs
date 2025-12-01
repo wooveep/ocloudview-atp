@@ -57,6 +57,12 @@ enum Commands {
         #[command(subcommand)]
         action: ReportAction,
     },
+
+    /// 数据库管理
+    Db {
+        #[command(subcommand)]
+        action: DbAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -223,6 +229,81 @@ pub enum ReportAction {
         #[arg(short, long, default_value = "30")]
         days: i32,
     },
+
+    /// 清理旧报告
+    Cleanup {
+        /// 保留最近N天的报告
+        #[arg(short, long, default_value = "180")]
+        days: i32,
+
+        /// 强制删除不提示确认
+        #[arg(short, long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DbAction {
+    /// 备份数据库
+    Backup {
+        /// 备份名称(可选,默认使用时间戳)
+        #[arg(short, long)]
+        name: Option<String>,
+
+        /// 数据库路径
+        #[arg(short, long, default_value = "~/.config/atp/data.db")]
+        db_path: String,
+
+        /// 备份目录
+        #[arg(short, long)]
+        backup_dir: Option<String>,
+    },
+
+    /// 从备份恢复数据库
+    Restore {
+        /// 备份文件路径
+        backup_path: String,
+
+        /// 数据库路径
+        #[arg(short, long, default_value = "~/.config/atp/data.db")]
+        db_path: String,
+
+        /// 恢复前先备份当前数据库
+        #[arg(long, default_value = "true")]
+        safety_backup: bool,
+    },
+
+    /// 列出所有备份
+    List {
+        /// 数据库路径
+        #[arg(short, long, default_value = "~/.config/atp/data.db")]
+        db_path: String,
+
+        /// 备份目录
+        #[arg(short, long)]
+        backup_dir: Option<String>,
+    },
+
+    /// 删除备份
+    Delete {
+        /// 备份文件路径
+        backup_path: String,
+    },
+
+    /// 清理旧备份
+    Cleanup {
+        /// 保留最新的N个备份
+        #[arg(short, long, default_value = "10")]
+        keep: usize,
+
+        /// 数据库路径
+        #[arg(short, long, default_value = "~/.config/atp/data.db")]
+        db_path: String,
+
+        /// 备份目录
+        #[arg(short = 'b', long)]
+        backup_dir: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -251,6 +332,7 @@ async fn main() -> Result<()> {
         Commands::Command { action } => commands::command::handle(action).await?,
         Commands::Scenario { action } => commands::scenario::handle(action).await?,
         Commands::Report { action } => commands::report::handle(action).await?,
+        Commands::Db { action } => commands::db::handle(action).await?,
     }
 
     Ok(())

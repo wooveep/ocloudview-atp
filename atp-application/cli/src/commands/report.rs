@@ -17,6 +17,7 @@ pub async fn handle(action: crate::ReportAction) -> Result<()> {
         crate::ReportAction::Export { id, output, format } => export_report(id, &output, &format).await,
         crate::ReportAction::Delete { id } => delete_report(id).await,
         crate::ReportAction::Stats { scenario, days } => show_stats(&scenario, days).await,
+        crate::ReportAction::Cleanup { days, force } => cleanup_reports(days, force).await,
     }
 }
 
@@ -240,6 +241,71 @@ async fn show_stats(scenario: &str, days: i32) -> Result<()> {
     } else {
         println!("  评级: {} 需要改进", "★".red());
     }
+
+    Ok(())
+}
+
+async fn cleanup_reports(days: i32, force: bool) -> Result<()> {
+    println!("{} 准备清理旧报告...", "⏳".cyan());
+
+    let storage_manager = StorageManager::new("~/.config/atp/data.db").await?;
+    let storage = Storage::from_manager(&storage_manager);
+
+    // 计算截止日期
+    let cutoff_date = chrono::Utc::now() - chrono::Duration::days(days as i64);
+
+    // 查询要删除的报告
+    let filter = ReportFilter {
+        start_time_to: Some(cutoff_date),
+        ..Default::default()
+    };
+
+    let to_delete = storage.reports().list(&filter).await?;
+
+    if to_delete.is_empty() {
+        println!("\n{} 没有需要清理的报告", "ℹ".yellow());
+        return Ok(());
+    }
+
+    println!("\n{} 找到 {} 个报告将被删除 (早于 {})",
+        "⚠".yellow(),
+        to_delete.len(),
+        cutoff_date.format("%Y-%m-%d")
+    );
+
+    // 显示统计
+    let total_steps: i32 = to_delete.iter().map(|r| r.total_steps).sum();
+    println!("  总步骤数: {}", total_steps);
+
+    // 确认删除(除非使用 --force)
+    if !force {
+        println!("\n是否继续删除? (y/N): ");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+
+        if input != "y" && input != "yes" {
+            println!("\n{} 已取消", "ℹ".yellow());
+            return Ok(());
+        }
+    }
+
+    // 执行删除
+    println!("\n{} 正在删除报告...", "🔄".cyan());
+    let mut deleted_count = 0;
+
+    for report in to_delete {
+        match storage.reports().delete(report.id).await {
+            Ok(_) => {
+                deleted_count += 1;
+            }
+            Err(e) => {
+                eprintln!("{} 删除报告 {} 失败: {}", "✗".red(), report.id, e);
+            }
+        }
+    }
+
+    println!("\n{} 已删除 {} 个报告", "✓".green(), deleted_count);
 
     Ok(())
 }

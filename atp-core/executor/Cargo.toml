@@ -19,6 +19,7 @@ async-trait = { workspace = true }
 atp-transport = { path = "../transport" }
 atp-protocol = { path = "../protocol" }
 atp-storage = { path = "../storage" }  # 数据库支持
+atp-vdiplatform = { path = "../vdiplatform" }  # VDI 平台集成
 
 # 时间处理 (用于报告时间戳)
 chrono = { workspace = true }
@@ -34,3 +35,4 @@ virt = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true }

@@ -1,8 +1,10 @@
+mod backup;
 mod connection;
 mod error;
 mod models;
 mod repositories;
 
+pub use backup::{BackupInfo, BackupManager};
 pub use connection::StorageManager;
 pub use error::{Result, StorageError};
 pub use models::*;

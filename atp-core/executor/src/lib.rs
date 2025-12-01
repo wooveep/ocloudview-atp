@@ -22,10 +22,13 @@ pub enum ExecutorError {
     Timeout,
 
     #[error("协议错误: {0}")]
-    ProtocolError(#[from] atp_protocol::ProtocolError),
+    ProtocolError(String),
 
     #[error("传输错误: {0}")]
-    TransportError(#[from] atp_transport::TransportError),
+    TransportError(String),
+
+    #[error("配置错误: {0}")]
+    ConfigError(String),
 
     #[error("IO 错误: {0}")]
     IoError(#[from] std::io::Error),

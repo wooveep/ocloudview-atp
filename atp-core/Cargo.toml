@@ -4,7 +4,7 @@ members = [
     "protocol",
     "executor",
     "vdiplatform",
-    "orchestrator",
+    # "orchestrator",  # Deprecated - functionality merged into executor
     "storage",
     "verification-server",
 ]

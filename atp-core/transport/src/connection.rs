@@ -250,6 +250,39 @@ impl HostConnection {
         Ok(Arc::clone(&self.connection))
     }
 
+    /// 获取指定虚拟机的 Domain
+    pub async fn get_domain(&self, domain_name: &str) -> Result<virt::domain::Domain> {
+        let state = *self.state.lock().await;
+        if state != ConnectionState::Connected {
+            return Err(TransportError::Disconnected);
+        }
+
+        let conn_guard = self.connection.lock().await;
+        let conn = conn_guard
+            .as_ref()
+            .ok_or_else(|| TransportError::Disconnected)?;
+
+        // 通过名称查找虚拟机
+        // 使用 spawn_blocking 因为 libvirt 的操作是同步的
+        let conn_clone = conn.clone();
+        let domain_name = domain_name.to_string();
+
+        let domain = tokio::task::spawn_blocking(move || {
+            virt::domain::Domain::lookup_by_name(&conn_clone, &domain_name)
+        })
+        .await
+        .map_err(|e| TransportError::ConnectionFailed(format!("任务执行失败: {}", e)))?
+        .map_err(|e| TransportError::ConnectionFailed(format!("查找虚拟机失败: {}", e)))?;
+
+        // 更新指标
+        self.metrics.increment_request().await;
+
+        // 更新最后活跃时间
+        *self.last_active.lock().await = chrono::Utc::now();
+
+        Ok(domain)
+    }
+
     /// 获取监控指标
     pub fn metrics(&self) -> Arc<ConnectionMetrics> {
         Arc::clone(&self.metrics)
