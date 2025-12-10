@@ -33,6 +33,16 @@ async-channel = "2.1"
 # Libvirt 绑定
 virt = { workspace = true }
 
+# 配置文件支持
+toml = "0.8"
+dirs = "5.0"
+
+# HTTP 客户端 (用于连通性测试)
+reqwest = { version = "0.11", features = ["json"] }
+
+# MD5 加密 (用于 VDI 密码加密)
+md5 = "0.7"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }

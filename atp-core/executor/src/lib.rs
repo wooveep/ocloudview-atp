@@ -4,9 +4,11 @@
 
 pub mod scenario;
 pub mod runner;
+pub mod test_config;
 
 pub use scenario::{Scenario, ScenarioStep, Action};
 pub use runner::{ScenarioRunner, ExecutionReport, StepReport, StepStatus};
+pub use test_config::{TestConfig, VdiConfig};
 
 use thiserror::Error;
 

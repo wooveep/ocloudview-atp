@@ -36,3 +36,11 @@ indicatif = "0.17"
 # 配置文件
 toml = "0.8"
 dirs = "5.0"
+shellexpand = "3.1"
+
+# HTTP 客户端 (用于 VDI API)
+reqwest = { version = "0.11", features = ["json"] }
+md5 = "0.7"
+
+# Libvirt 支持 (用于 VDI 验证)
+virt = { version = "0.4", features = ["qemu"] }

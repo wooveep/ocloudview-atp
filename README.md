@@ -73,6 +73,48 @@ ocloudview-atp/
 
 ## 快速开始
 
+### VDI + libvirt 集成测试 🚀
+
+测试 VDI 平台与 libvirt 的完整集成：
+
+#### 方式 1: 使用 CLI 命令（推荐） ⭐
+
+```bash
+# 验证 VDI 与 libvirt 虚拟机状态一致性
+./atp-application/target/release/atp vdi verify
+
+# 列出主机
+./atp-application/target/release/atp vdi list-hosts
+
+# 列出虚拟机
+./atp-application/target/release/atp vdi list-vms
+```
+
+#### 方式 2: 使用示例程序
+
+```bash
+cargo run --example vdi_libvirt_integration --manifest-path atp-core/executor/Cargo.toml
+```
+
+#### 配置文件 (`test.toml`)
+
+```toml
+[vdi]
+base_url = "http://192.168.41.51:8088"
+username = "admin"
+password = "your_password"
+verify_ssl = false
+connect_timeout = 10
+```
+
+这将自动：
+- 登录 VDI 平台获取 Token
+- 从 VDI 获取主机列表
+- 连接到主机的 libvirtd
+- 对比 VDI 和 libvirt 的虚拟机信息
+
+**详细文档**: [CLI VDI 命令使用指南](docs/CLI_VDI_COMMANDS.md) | [VDI_LIBVIRT_INTEGRATION.md](VDI_LIBVIRT_INTEGRATION.md)
+
 ### 前置要求
 - Rust 1.70+
 - QEMU/KVM
@@ -104,6 +146,14 @@ cargo build --release
 
 ## 技术特性
 
+### VDI 平台集成 ✅ (2025-12-08)
+- 完整的 VDI 平台 API 集成
+- MD5 密码加密和 Token 认证
+- 主机和虚拟机自动发现
+- VDI + libvirt 数据同步验证
+- 支持多主机管理
+- 详细文档: [VDI_LIBVIRT_INTEGRATION.md](VDI_LIBVIRT_INTEGRATION.md)
+
 ### 分层架构
 - 清晰的职责分离
 - 模块化设计
@@ -132,3 +182,15 @@ cargo build --release
 ## 文档
 
 详细文档请参见 `docs/` 目录。
+
+### VDI 平台集成文档
+- [VDI + libvirt 集成报告](VDI_LIBVIRT_INTEGRATION.md) - 完整集成测试报告
+- [VDI 连通性测试总结](VDI_CONNECTIVITY_TEST_SUMMARY.md) - API 测试和连通性验证
+- [VDI 登录 API 指南](docs/VDI_LOGIN_API_GUIDE.md) - 认证和 Token 使用
+- [VDI API 发现文档](docs/VDI_API_DISCOVERY.md) - Swagger API 文档
+- [测试配置指南](docs/TESTING_CONFIG_GUIDE.md) - test.toml 配置说明
+
+### 架构文档
+- [系统架构设计](docs/ARCHITECTURE.md)
+- [协议层设计](docs/PROTOCOL_LAYER.md)
+- [传输层设计](docs/TRANSPORT_LAYER.md)

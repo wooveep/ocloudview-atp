@@ -9,17 +9,29 @@
 //! - 虚拟机已安装 qemu-guest-agent (用于 QGA 测试)
 //! - 虚拟机配置了 SPICE (用于 SPICE 测试)
 //!
+//! 配置方式:
+//! 1. 使用配置文件 (test.toml / tests/config.toml / ~/.config/atp/test.toml)
+//! 2. 使用环境变量 (会覆盖配置文件)
+//! 3. 使用默认值
+//!
 //! 运行方法:
 //! ```bash
-//! # 运行所有 e2e 测试
+//! # 方式1: 使用配置文件
+//! echo "[vm]
+//! name = \"my-test-vm\"" > test.toml
+//! cargo test --test e2e_tests -- --nocapture
+//!
+//! # 方式2: 使用环境变量
+//! export ATP_TEST_VM=my-test-vm
+//! export ATP_TEST_HOST=qemu:///system
+//! cargo test --test e2e_tests -- --nocapture
+//!
+//! # 方式3: 指定配置文件
+//! export ATP_TEST_CONFIG=./my-test-config.toml
 //! cargo test --test e2e_tests -- --nocapture
 //!
 //! # 运行特定测试
 //! cargo test --test e2e_tests test_basic_scenario -- --nocapture
-//!
-//! # 设置测试虚拟机名称 (通过环境变量)
-//! export ATP_TEST_VM=my-test-vm
-//! cargo test --test e2e_tests -- --nocapture
 //! ```
 
 use atp_executor::*;
@@ -27,46 +39,50 @@ use atp_transport::{TransportManager, HostInfo};
 use atp_protocol::ProtocolRegistry;
 use std::sync::Arc;
 use std::time::Duration;
-use std::env;
+use std::collections::HashMap;
 
-/// 获取测试虚拟机名称 (从环境变量或使用默认值)
-fn get_test_vm_name() -> String {
-    env::var("ATP_TEST_VM").unwrap_or_else(|_| "test-vm".to_string())
-}
+/// 初始化测试环境 (使用 TestConfig)
+async fn setup_test_runner() -> (ScenarioRunner, TestConfig) {
+    // 1. 加载测试配置 (从文件或环境变量)
+    let config = TestConfig::load()
+        .expect("Failed to load test config");
 
-/// 获取测试主机 URI
-fn get_test_host_uri() -> String {
-    env::var("ATP_TEST_HOST").unwrap_or_else(|_| "qemu:///system".to_string())
-}
+    // 2. 验证配置
+    config.validate()
+        .expect("Invalid test config");
 
-/// 初始化测试环境
-async fn setup_test_runner() -> ScenarioRunner {
-    // 初始化日志
+    // 3. 初始化日志
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("debug")
+        .with_env_filter(&config.environment.log_level)
         .try_init();
 
-    // 创建传输管理器 (使用默认配置)
+    tracing::info!("Test config loaded");
+    tracing::debug!("VM name: {}", config.vm.name);
+    tracing::debug!("Libvirt URI: {}", config.libvirt.uri);
+
+    // 4. 创建传输管理器
     let transport_manager = Arc::new(TransportManager::default());
 
-    // 添加测试主机
+    // 5. 添加测试主机 (从配置读取)
     let host_info = HostInfo {
         id: "test-host".to_string(),
         host: "localhost".to_string(),
-        uri: get_test_host_uri(),
+        uri: config.libvirt.uri.clone(),
         tags: vec!["test".to_string()],
-        metadata: std::collections::HashMap::new(),
+        metadata: HashMap::new(),
     };
 
     transport_manager.add_host(host_info).await
         .expect("Failed to add test host");
 
-    // 创建协议注册表
+    // 6. 创建协议注册表
     let protocol_registry = Arc::new(ProtocolRegistry::new());
 
-    // 创建场景执行器
-    ScenarioRunner::new(transport_manager, protocol_registry)
-        .with_timeout(Duration::from_secs(60))
+    // 7. 创建场景执行器 (使用配置的超时)
+    let runner = ScenarioRunner::new(transport_manager, protocol_registry)
+        .with_timeout(Duration::from_secs(config.test.timeout));
+
+    (runner, config)
 }
 
 // ========================================

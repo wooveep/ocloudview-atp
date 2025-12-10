@@ -16,16 +16,17 @@
 ✅ **阶段5完成**: CLI 命令行工具实现 (90% 完成度)
 ✅ **阶段6.0完成**: 数据库层集成 (100% 完成度)
 ✅ **阶段7完成**: Guest 验证器实现 (95% 完成度 - Linux 平台)
-⚠️ **阶段8进行中**: 集成和测试 (58% 完成度)
+⚠️ **阶段8进行中**: 集成和测试 (65% 完成度)
   - ✅ 单元测试框架建立
   - ✅ 使用本地 libvirtd 环境（无需 Mock）
   - ✅ E2E 测试框架完成
-  - ✅ **测试配置指南完成** (新增)
+  - ✅ 测试配置指南完成
+  - ✅ **测试配置加载模块完成** (新增)
   - ⚠️ 集成测试待完成
-🔄 **当前阶段**: 协议集成到执行器 + 测试完善 + 配置标准化
+🔄 **当前阶段**: 测试配置标准化完成 + 集成测试待运行
 
-**整体进度**: 81% (测试配置框架完善,待实际运行验证)
-当前版本: v0.3.3 (测试配置标准化版)
+**整体进度**: 83% (测试配置加载模块完成,代码级别实现完整)
+当前版本: v0.3.4 (测试配置加载功能版)
 最后更新: 2025-12-01
 
 ---
@@ -578,8 +579,8 @@
 
 **参考文档**: `docs/STAGE8_TESTING.md`
 
-### 8.2 集成测试 ⏳ 部分完成
-- [x] ✅ **创建测试配置指南文档** (docs/TESTING_CONFIG_GUIDE.md) - **2025-12-01 新增**
+### 8.2 集成测试 ✅ **部分完成** (65% 完成度)
+- [x] ✅ **创建测试配置指南文档** (docs/TESTING_CONFIG_GUIDE.md) - **2025-12-01**
   - [x] 环境变量配置方案
   - [x] 测试配置文件模板 (TOML)
   - [x] 单元测试配置
@@ -588,6 +589,22 @@
   - [x] VDI 平台测试配置
   - [x] 故障排查指南
   - [x] CI/CD 配置示例
+- [x] ✅ **实现测试配置加载模块** (atp-core/executor/src/test_config.rs) - **2025-12-01 新增**
+  - [x] 定义完整的配置结构 (TestConfig + 7个子结构)
+  - [x] 实现配置加载逻辑 (从文件或环境变量)
+  - [x] 支持多格式 (TOML/YAML/JSON)
+  - [x] 智能配置文件搜索 (5个路径优先级)
+  - [x] 环境变量覆盖 (15+ 个环境变量)
+  - [x] 配置验证功能
+  - [x] 编写单元测试 (3个测试, 100%通过)
+- [x] ✅ **集成到 E2E 测试** - **2025-12-01 完成**
+  - [x] 更新 setup_test_runner() 使用 TestConfig
+  - [x] 更新测试函数使用配置
+  - [x] 更新测试文档注释
+- [x] ✅ **创建配置文件模板** - **2025-12-01 完成**
+  - [x] test.toml.example (完整配置模板)
+  - [x] tests/test.toml.example (简化版)
+  - [x] TEST_CONFIG_README.md (使用说明)
 - [ ] 使用本地 libvirtd 环境进行测试
 - [ ] 端到端测试
   - [ ] Scenario -> Executor -> Transport -> Protocol -> VM
@@ -595,15 +612,18 @@
 - [ ] 多主机并发测试
 - [ ] 场景执行测试
 
-**测试配置方案** ✅:
-- ✅ 支持环境变量配置 (优先级最高)
+**测试配置方案** ✅ **已实现**:
+- ✅ 支持环境变量配置 (优先级最高) - **15+ 个环境变量**
   - `ATP_TEST_HOST` - libvirt URI 配置
   - `ATP_TEST_VM` - 测试虚拟机名称
   - `ATP_VDI_BASE_URL` - VDI 平台地址
   - `ATP_VDI_USERNAME/PASSWORD` - VDI 认证
+  - 更多协议和测试配置...
 - ✅ 支持 TOML/YAML/JSON 配置文件
-- ✅ 配置文件路径优先级: ./test.toml > ./tests/config.toml > ~/.config/atp/test.toml
+- ✅ 配置文件搜索路径: ATP_TEST_CONFIG > ./test.toml > ./tests/config.toml > ~/.config/atp/test.toml > /etc/atp/test.toml
 - ✅ 完整的配置模板和使用示例
+- ✅ 单元测试验证 (3个测试, 100%通过)
+- ✅ 完整文档 (4个文档, ~6000行)
 
 ### 8.3 性能测试 📋 待实现
 - [ ] 连接池性能
@@ -826,7 +846,9 @@
   - 抽象层: ~279 行 (✅ 100%)
 - **vdiplatform**: ~650 行（⚠️ 60% 完成）
 - **orchestrator**: ~370 行（⚠️ 65% 完成）
-- **executor**: ~500 行（⚠️ 70% 完成）
+- **executor**: ~1,200 行（✅ 85% 完成）
+  - runner: ~500 行
+  - test_config: ~700 行 (✅ **新增** - 2025-12-01)
 - **storage**: ~800 行（✅ 85% 完成）
 - **verification-server**: ~1,010 行（✅ 95% 完成）
 - **CLI**: ~550 行（✅ 90% 完成，包含报告命令 ~246 行）
@@ -834,23 +856,23 @@
   - verifier-core: ~500 行（传输层 + 核心接口）
   - verifier-agent: ~900 行（验证器实现 + Agent）
 
-**总计**: ~14,500+ 行代码
+**总计**: ~15,200+ 行代码 (从14,500+增加~700行)
 
 ### 文档
-- **架构文档**: 6 个 (新增测试配置指南)
-- **实现总结**: 7 个（Stage 1-5 + Database Integration + Testing）
+- **架构文档**: 6 个 (测试配置指南)
+- **实现总结**: 8 个 (Stage 1-5 + Database + Testing + TestConfig) ✅ **新增1个**
 - **实现指南**: 3 个（VirtIO Serial, USB 重定向, SPICE）
-- **技术文档**: 4 个（Database Implementation, Data Storage Analysis, Testing Config）
+- **技术文档**: 6 个 (Database, Testing Config, Test Config Implementation) ✅ **新增2个**
 - **Guest 验证器文档**: 2 个（Client README + Server README）
 - **测试文档**: 3 个（STAGE8_TESTING.md, E2E_TESTING_GUIDE.md, TESTING_CONFIG_GUIDE.md）
-- **快速开始**: 2 个（QUICKSTART.md + README.md）
+- **快速开始**: 3 个（QUICKSTART.md + README.md + TEST_CONFIG_README.md） ✅ **新增1个**
 
-**文档总量**: 23+ 个文件，约 350+ KB
+**文档总量**: 27+ 个文件，约 400+ KB (从23+增加4个文档)
 
 ### 测试统计
 - **测试文件数**: 5 个 ✅ **2025-12-01更新**
-- **测试用例数**: 63 个 (从57增加到63)
-  - executor: 44 个 (从12增加到44,包含19个VDI测试+13个报告测试)
+- **测试用例数**: 66 个 (从63增加到66) ✅ **新增3个配置测试**
+  - executor: 47 个 (从44增加到47,包含3个test_config测试)
   - orchestrator: 18 个 (待移除)
   - transport: 21 个
   - protocol: 6 个
@@ -858,10 +880,11 @@
 - **测试覆盖率**: ~60% (需提高到 >80%) ✅ **2025-12-01更新** (从55%提升到60%)
 
 **已完成测试**:
-- executor 模块: 44 个测试 (✅ 100% 通过) ✅ **2025-12-01更新**
+- executor 模块: 47 个测试 (✅ 100% 通过) ✅ **2025-12-01更新**
   - 基础功能: 12 个测试
-  - VDI 操作: 19 个测试 (新增)
-  - 报告功能: 13 个测试 (从 Orchestrator 迁移)
+  - VDI 操作: 19 个测试
+  - 报告功能: 13 个测试
+  - **配置加载: 3 个测试 (新增)** ✅
 - orchestrator 模块: 18 个测试 (✅ 100% 通过)
 - transport 模块: 21 个基础测试 (配置和类型测试 ✅ 100% 通过)
 - protocol 模块: 6 个基础测试 (类型和错误处理 ✅ 100% 通过)
@@ -898,6 +921,103 @@
 ---
 
 ## 更新日志
+
+### 2025-12-01 (深夜 - 测试配置加载模块实施) ✅
+- ✅ **完成测试配置加载模块全面实施**
+
+  **Phase 1: 配置结构创建** (~700 行代码)
+  - ✅ 创建 `atp-core/executor/src/test_config.rs`
+  - ✅ 定义 8 个配置结构体
+    - TestConfig (顶层配置)
+    - EnvironmentConfig (环境配置)
+    - LibvirtConfig (Libvirt 配置)
+    - VmConfig (虚拟机配置)
+    - ProtocolsConfig (协议配置集合)
+    - QmpConfig / QgaConfig / SpiceConfig / VirtioSerialConfig
+    - VdiConfig (VDI 平台配置)
+    - TestBehaviorConfig (测试行为配置)
+    - DatabaseConfig (数据库配置)
+  - ✅ 实现所有 Default trait (20+ 个默认值函数)
+  - ✅ 添加 Serde 序列化/反序列化支持
+
+  **Phase 2: 配置加载逻辑** (完整功能)
+  - ✅ `TestConfig::load()` - 统一加载入口
+  - ✅ `load_from_file()` - 支持 TOML/YAML/JSON 自动识别
+  - ✅ `find_config_file()` - 智能搜索 5 个路径
+    1. $ATP_TEST_CONFIG 环境变量
+    2. ./test.toml (当前目录)
+    3. ./tests/config.toml (tests目录)
+    4. ~/.config/atp/test.toml (用户配置)
+    5. /etc/atp/test.toml (系统配置)
+  - ✅ `apply_env_vars()` - 15+ 个环境变量覆盖
+  - ✅ `validate()` - 配置验证逻辑
+  - ✅ `save_to_file()` - 保存配置到文件
+
+  **Phase 3: E2E 测试集成** (完整更新)
+  - ✅ 更新 `setup_test_runner()` 函数
+    - 返回 `(ScenarioRunner, TestConfig)` 元组
+    - 从配置加载所有参数
+    - 使用配置的日志级别和超时
+  - ✅ 更新测试函数使用配置
+    - `test_basic_scenario_wait()`
+    - `test_qmp_keyboard_input()`
+  - ✅ 更新文档注释 (3种配置方式说明)
+
+  **Phase 4: 配置文件模板** (2个模板)
+  - ✅ `test.toml.example` - 完整配置模板 (~200行)
+    - 所有配置项详细注释
+    - 默认值展示
+    - 环境变量对应说明
+  - ✅ `tests/test.toml.example` - 简化版模板
+    - 最小化配置示例
+    - E2E 测试快速开始
+
+  **Phase 5: 单元测试** (3个测试, 100%通过)
+  - ✅ `test_default_config()` - 默认配置创建测试
+  - ✅ `test_config_serialization()` - TOML/YAML/JSON序列化测试
+  - ✅ `test_config_validation()` - 配置验证测试
+  - ✅ 测试结果: 3 passed; 0 failed; 0 ignored ✅
+
+  **Phase 6: 依赖和导出** (完整集成)
+  - ✅ 更新 Cargo.toml 添加依赖
+    - toml = "0.8"
+    - dirs = "5.0"
+  - ✅ 更新 lib.rs 导出 TestConfig
+  - ✅ 编译验证通过 (4.14s)
+
+- 📊 实施成果
+  - 代码行数: ~700 行 (test_config.rs)
+  - 配置模板: 2 个
+  - 文档: 4 个 (~6000行)
+    - TEST_CONFIG_IMPLEMENTATION.md (设计方案)
+    - TEST_CONFIG_IMPLEMENTATION_SUMMARY.md (实施总结)
+    - TEST_CONFIG_README.md (快速开始)
+    - TESTING_CONFIG_GUIDE.md (详细指南)
+  - 单元测试: 3 个 (100%通过)
+  - 支持格式: TOML / YAML / JSON
+  - 环境变量: 15+ 个
+  - 搜索路径: 5 个优先级
+
+- 📝 项目状态更新
+  - 整体进度: 81% → **83%**
+  - 阶段8 测试: 58% → **65%**
+  - 版本: v0.3.3 → **v0.3.4**
+  - 总代码: 14,500+ → **15,200+** 行
+  - 文档总量: 23+ → **27+** 个文件
+  - 测试用例: 63 → **66** 个
+
+- 🎯 技术亮点
+  - 配置优先级: 环境变量 > 配置文件 > 默认值
+  - 多格式支持: 自动识别文件扩展名
+  - 智能搜索: 5个路径自动查找
+  - 类型安全: Rust 类型系统保证
+  - 向后兼容: 100% 兼容现有代码
+
+- 📝 下一步计划
+  - [ ] 运行实际 E2E 测试验证配置加载
+  - [ ] 集成测试模块使用新配置
+  - [ ] CLI 工具支持测试配置
+  - [ ] 创建配置模板生成工具
 
 ### 2025-12-01 (晚上 - 测试配置标准化) ✅
 - ✅ **完成测试配置标准化和文档编写**

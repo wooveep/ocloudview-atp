@@ -63,6 +63,12 @@ enum Commands {
         #[command(subcommand)]
         action: DbAction,
     },
+
+    /// VDI 平台管理和验证
+    Vdi {
+        #[command(subcommand)]
+        action: VdiAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -306,6 +312,53 @@ pub enum DbAction {
     },
 }
 
+#[derive(Subcommand)]
+pub enum VdiAction {
+    /// 验证 VDI 平台与 libvirt 虚拟机状态一致性
+    Verify {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "test.toml")]
+        config: String,
+
+        /// 只显示不一致的虚拟机
+        #[arg(short, long)]
+        only_diff: bool,
+
+        /// 输出格式 (table/json/yaml)
+        #[arg(short = 'f', long, default_value = "table")]
+        format: String,
+    },
+
+    /// 列出 VDI 平台的所有主机
+    ListHosts {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "test.toml")]
+        config: String,
+    },
+
+    /// 列出 VDI 平台的所有虚拟机
+    ListVms {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "test.toml")]
+        config: String,
+
+        /// 主机名过滤
+        #[arg(short = 'H', long)]
+        host: Option<String>,
+    },
+
+    /// 同步 VDI 主机到本地配置
+    SyncHosts {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "test.toml")]
+        config: String,
+
+        /// 自动连接测试
+        #[arg(short, long)]
+        test_connection: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -333,6 +386,7 @@ async fn main() -> Result<()> {
         Commands::Scenario { action } => commands::scenario::handle(action).await?,
         Commands::Report { action } => commands::report::handle(action).await?,
         Commands::Db { action } => commands::db::handle(action).await?,
+        Commands::Vdi { action } => commands::vdi::handle(action).await?,
     }
 
     Ok(())

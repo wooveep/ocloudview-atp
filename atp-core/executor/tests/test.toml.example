@@ -1,0 +1,11 @@
+# ATP E2E 测试配置示例 (简化版)
+# 复制为 test.toml 使用
+
+[vm]
+name = "test-vm"              # 修改为您的测试虚拟机名称
+
+[libvirt]
+uri = "qemu:///system"        # 或 "qemu+ssh://user@host/system"
+
+[test]
+timeout = 120                 # E2E 测试超时时间 (秒)
