@@ -2,7 +2,7 @@
 
 use crate::VdiAction;
 use anyhow::{Context, Result};
-use atp_executor::{TestConfig, VdiConfig};
+use atp_executor::TestConfig;
 use atp_transport::{HostConnection, HostInfo};
 use md5;
 use reqwest;
@@ -78,21 +78,21 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
         .build()?;
 
     let password_md5 = format!("{:x}", md5::compute(vdi_config.password.as_bytes()));
-    let login_url = format!("{}/ocloud/v1/login", base_url);
-    let login_data = json!({
-        "username": vdi_config.username,
-        "password": password_md5,
-        "client": ""
-    });
+    let login_url = format!("{}/ocloud/login", base_url);
 
-    let response = client.post(&login_url).json(&login_data).send().await?;
+    // 使用 form-data 格式
+    let form = reqwest::multipart::Form::new()
+        .text("username", vdi_config.username.clone())
+        .text("password", password_md5);
+
+    let response = client.post(&login_url).multipart(form).send().await?;
     let login_result: Value = response.json().await?;
 
-    if login_result["status"].as_i64().unwrap_or(-1) != 0 {
+    if login_result["status"].as_str().unwrap_or("-1") != "0" {
         anyhow::bail!("VDI 登录失败: {}", login_result["msg"]);
     }
 
-    let token = login_result["data"]["token"]
+    let token = login_result["responseObject"]["token"]
         .as_str()
         .context("未获取到 Token")?
         .to_string();
@@ -101,19 +101,19 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
 
     // 2. 从 VDI 获取主机列表
     println!("📋 步骤 2/4: 获取 VDI 主机列表...");
-    let host_url = format!("{}/ocloud/v1/host?pageNum=1&pageSize=100", base_url);
+    let host_url = format!("{}/ocloud/host/all", base_url);
     let response = client
         .get(&host_url)
-        .header("Token", &token)
+        .header("token", &token)
         .send()
         .await?;
 
     let host_result: Value = response.json().await?;
-    if host_result["status"].as_i64().unwrap_or(-1) != 0 {
+    if host_result["status"].as_str().unwrap_or("-1") != "0" {
         anyhow::bail!("获取主机列表失败: {}", host_result["msg"]);
     }
 
-    let hosts = host_result["data"]["list"]
+    let hosts = host_result["responseList"]
         .as_array()
         .context("主机列表为空")?;
 
@@ -131,15 +131,15 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
 
     // 3. 从 VDI 获取虚拟机列表
     println!("📋 步骤 3/4: 获取 VDI 虚拟机列表...");
-    let domain_url = format!("{}/ocloud/v1/domain?pageNum=1&pageSize=1000", base_url);
+    let domain_url = format!("{}/ocloud/domain/all?pageNum=1&pageSize=10000", base_url);
     let response = client
-        .get(&domain_url)
-        .header("Token", &token)
+        .post(&domain_url)
+        .header("token", &token)
         .send()
         .await?;
 
     let domain_result: Value = response.json().await?;
-    let vdi_domains = domain_result["data"]["list"]
+    let vdi_domains = domain_result["responsePageInfo"]["list"]
         .as_array()
         .context("虚拟机列表为空")?;
 
@@ -155,8 +155,8 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
             6 => "升级中".to_string(),
             _ => "未知".to_string(),
         };
-        // 使用 hostId 获取主机名
-        let host_id = domain["hostId"].as_str().unwrap_or("");
+        // 使用 host_id 获取主机名
+        let host_id = domain["host_id"].as_str().unwrap_or("");
         let host = host_id_to_name.get(host_id).cloned().unwrap_or_else(|| "".to_string());
 
         if !name.is_empty() {
@@ -432,15 +432,15 @@ async fn list_hosts(config_path: &str) -> Result<()> {
     let (client, token) = login_vdi(vdi_config).await?;
     let base_url = vdi_config.base_url.trim_end_matches('/');
 
-    let host_url = format!("{}/ocloud/v1/host?pageNum=1&pageSize=100", base_url);
+    let host_url = format!("{}/ocloud/host/all", base_url);
     let response = client
         .get(&host_url)
-        .header("Token", &token)
+        .header("token", &token)
         .send()
         .await?;
 
     let host_result: Value = response.json().await?;
-    let hosts = host_result["data"]["list"]
+    let hosts = host_result["responseList"]
         .as_array()
         .context("主机列表为空")?;
 
@@ -457,7 +457,7 @@ async fn list_hosts(config_path: &str) -> Result<()> {
             1 => "在线 ✅",
             _ => "离线 ❌",
         };
-        let cpu = host["cpuSize"].as_i64().unwrap_or(0);
+        let cpu = host["cpu_size"].as_i64().unwrap_or(0);
         let memory_gb = host["memory"].as_f64().unwrap_or(0.0);
 
         println!(
@@ -481,27 +481,27 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
     let (client, token) = login_vdi(vdi_config).await?;
     let base_url = vdi_config.base_url.trim_end_matches('/');
 
-    let domain_url = format!("{}/ocloud/v1/domain?pageNum=1&pageSize=1000", base_url);
+    let domain_url = format!("{}/ocloud/domain/all?pageNum=1&pageSize=10000", base_url);
     let response = client
-        .get(&domain_url)
-        .header("Token", &token)
+        .post(&domain_url)
+        .header("token", &token)
         .send()
         .await?;
 
     let domain_result: Value = response.json().await?;
-    let domains = domain_result["data"]["list"]
+    let domains = domain_result["responsePageInfo"]["list"]
         .as_array()
         .context("虚拟机列表为空")?;
 
     // 获取主机列表以建立ID到名称的映射
-    let host_url = format!("{}/ocloud/v1/host?pageNum=1&pageSize=100", base_url);
+    let host_url = format!("{}/ocloud/host/all", base_url);
     let response2 = client
         .get(&host_url)
-        .header("Token", &token)
+        .header("token", &token)
         .send()
         .await?;
     let host_result: Value = response2.json().await?;
-    let hosts_vec = host_result["data"]["list"].as_array().cloned().unwrap_or_default();
+    let hosts_vec = host_result["responseList"].as_array().cloned().unwrap_or_default();
 
     let mut host_id_to_name: HashMap<String, String> = HashMap::new();
     for host in &hosts_vec {
@@ -521,8 +521,8 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
     let mut count = 0;
     for domain in domains {
         let name = domain["name"].as_str().unwrap_or("");
-        // 使用 hostId 获取主机名
-        let host_id = domain["hostId"].as_str().unwrap_or("");
+        // 使用 host_id 获取主机名
+        let host_id = domain["host_id"].as_str().unwrap_or("");
         let host_name = host_id_to_name.get(host_id).map(|s| s.as_str()).unwrap_or("");
 
         // 主机过滤
@@ -541,7 +541,7 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
             6 => "升级中 ⬆️",
             _ => "未知 ⚠️",
         };
-        let cpu = domain["cpuNum"].as_i64().unwrap_or(0);
+        let cpu = domain["cpu"].as_i64().unwrap_or(0);
         let memory_gb = domain["memory"].as_f64().unwrap_or(0.0) / 1024.0;
 
         println!(
@@ -566,15 +566,15 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
     let (client, token) = login_vdi(vdi_config).await?;
     let base_url = vdi_config.base_url.trim_end_matches('/');
 
-    let host_url = format!("{}/ocloud/v1/host?pageNum=1&pageSize=100", base_url);
+    let host_url = format!("{}/ocloud/host/all", base_url);
     let response = client
         .get(&host_url)
-        .header("Token", &token)
+        .header("token", &token)
         .send()
         .await?;
 
     let host_result: Value = response.json().await?;
-    let hosts = host_result["data"]["list"]
+    let hosts = host_result["responseList"]
         .as_array()
         .context("主机列表为空")?;
 
@@ -634,22 +634,21 @@ async fn login_vdi(
 
     let base_url = vdi_config.base_url.trim_end_matches('/');
     let password_md5 = format!("{:x}", md5::compute(vdi_config.password.as_bytes()));
-    let login_url = format!("{}/ocloud/v1/login", base_url);
+    let login_url = format!("{}/ocloud/login", base_url);
 
-    let login_data = json!({
-        "username": vdi_config.username,
-        "password": password_md5,
-        "client": ""
-    });
+    // 使用 form-data 格式
+    let form = reqwest::multipart::Form::new()
+        .text("username", vdi_config.username.clone())
+        .text("password", password_md5);
 
-    let response = client.post(&login_url).json(&login_data).send().await?;
+    let response = client.post(&login_url).multipart(form).send().await?;
     let login_result: Value = response.json().await?;
 
-    if login_result["status"].as_i64().unwrap_or(-1) != 0 {
+    if login_result["status"].as_str().unwrap_or("-1") != "0" {
         anyhow::bail!("VDI 登录失败: {}", login_result["msg"]);
     }
 
-    let token = login_result["data"]["token"]
+    let token = login_result["responseObject"]["token"]
         .as_str()
         .context("未获取到 Token")?
         .to_string();
