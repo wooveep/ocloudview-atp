@@ -1,0 +1,42 @@
+[package]
+name = "verifier-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Guest 验证器 Agent 实现"
+
+[[bin]]
+name = "verifier-agent"
+path = "src/main.rs"
+
+[dependencies]
+# 核心库
+verifier-core = { path = "../verifier-core" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# WebSocket
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+
+# 平台特定依赖
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.12"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+lazy_static = "1.4"

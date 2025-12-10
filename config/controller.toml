@@ -1,0 +1,75 @@
+# Test Controller 配置文件
+
+[general]
+# 日志级别: trace, debug, info, warn, error
+log_level = "info"
+
+# 日志输出格式: json, pretty
+log_format = "pretty"
+
+[libvirt]
+# Libvirt 连接 URI
+uri = "qemu:///system"
+
+# 连接超时（秒）
+connect_timeout = 30
+
+[qmp]
+# QMP 连接超时（秒）
+connect_timeout = 10
+
+# QMP 指令超时（秒）
+command_timeout = 5
+
+# 重试次数
+retry_attempts = 3
+
+[websocket]
+# WebSocket 监听地址
+listen_addr = "0.0.0.0"
+
+# WebSocket 监听端口
+listen_port = 8081
+
+# 心跳间隔（秒）
+heartbeat_interval = 30
+
+# 连接超时（秒）
+connection_timeout = 60
+
+[keymapping]
+# 默认键盘布局: en-US, en-GB, zh-CN
+default_layout = "en-US"
+
+# 按键间隔（毫秒）
+key_interval = 50
+
+# 按键保持时间（毫秒）
+key_hold_time = 100
+
+[testing]
+# 最大并发 VM 数
+max_concurrent_vms = 50
+
+# 测试超时（秒）
+test_timeout = 300
+
+# 失败重试次数
+retry_on_failure = 2
+
+# 测试结果输出目录
+output_dir = "./test-results"
+
+[vm_actor]
+# Actor 消息队列大小
+message_queue_size = 1000
+
+# Actor 空闲超时（秒）
+idle_timeout = 600
+
+[orchestrator]
+# 编排器工作线程数（0 = CPU 核心数）
+worker_threads = 0
+
+# 事件处理队列大小
+event_queue_size = 10000

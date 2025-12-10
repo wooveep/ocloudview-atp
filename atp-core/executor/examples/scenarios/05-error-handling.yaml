@@ -1,0 +1,54 @@
+# 错误处理测试场景
+#
+# 功能: 测试执行器的错误处理能力
+# 要求:
+#   - 虚拟机正在运行
+#   - 安装了 qemu-guest-agent
+#
+# 预期行为:
+#   - 第一个命令成功
+#   - 第二个命令失败 (返回非0退出码)
+#   - 执行在第二步停止，第三步不执行
+#   - 整体报告标记为失败
+#
+# 使用方法:
+#   export ATP_TEST_VM=your-vm-name
+#   cargo test --test e2e_tests test_command_failure_handling -- --nocapture --ignored
+
+name: "error-handling-test"
+description: "错误处理和失败恢复测试"
+target_host: "qemu:///system"
+target_domain: "test-vm"
+
+tags:
+  - "error"
+  - "testing"
+  - "qga"
+
+steps:
+  - name: "1. 成功的命令 - 应该通过"
+    action:
+      type: exec_command
+      command: "echo 'This command will succeed' && exit 0"
+    verify: false
+    timeout: 10
+
+  - name: "2. 失败的命令 - 应该失败"
+    action:
+      type: exec_command
+      command: "echo 'This command will fail' && exit 1"
+    verify: false
+    timeout: 10
+
+  - name: "3. 这一步不应该执行"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "4. 这一步也不应该执行"
+    action:
+      type: exec_command
+      command: "echo 'This should not run'"
+    verify: false
+    timeout: 10

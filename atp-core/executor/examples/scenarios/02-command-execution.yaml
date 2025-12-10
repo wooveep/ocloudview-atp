@@ -1,0 +1,56 @@
+# 命令执行测试场景
+#
+# 功能: 测试 QGA (QEMU Guest Agent) 的命令执行功能
+# 要求:
+#   - 虚拟机正在运行
+#   - 虚拟机内已安装并启动 qemu-guest-agent
+#
+# 使用方法:
+#   export ATP_TEST_VM=your-vm-name
+#   cargo test --test e2e_tests test_qga_command_execution -- --nocapture --ignored
+
+name: "command-execution-test"
+description: "QGA 命令执行测试"
+target_host: "qemu:///system"
+target_domain: "test-vm"
+
+tags:
+  - "command"
+  - "qga"
+  - "basic"
+
+steps:
+  - name: "1. 执行 echo 命令"
+    action:
+      type: exec_command
+      command: "echo 'Hello from QGA'"
+    verify: true
+    timeout: 10
+
+  - name: "2. 查看系统信息"
+    action:
+      type: exec_command
+      command: "uname -a"
+    verify: false
+    timeout: 10
+
+  - name: "3. 查看当前时间"
+    action:
+      type: exec_command
+      command: "date '+%Y-%m-%d %H:%M:%S'"
+    verify: false
+    timeout: 10
+
+  - name: "4. 查看主机名"
+    action:
+      type: exec_command
+      command: "hostname"
+    verify: false
+    timeout: 10
+
+  - name: "5. 查看 /etc/os-release"
+    action:
+      type: exec_command
+      command: "cat /etc/os-release | head -n 5"
+    verify: false
+    timeout: 10

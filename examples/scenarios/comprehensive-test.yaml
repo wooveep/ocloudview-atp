@@ -1,0 +1,61 @@
+name: "综合测试场景"
+description: "综合测试键盘、鼠标和命令执行功能"
+tags:
+  - comprehensive
+  - integration
+  - test
+
+steps:
+  # 步骤 1: 打开终端
+  - name: "打开终端 (Ctrl+Alt+T)"
+    action:
+      type: send_text
+      text: "gnome-terminal"
+    timeout: 10
+
+  - name: "等待终端打开"
+    action:
+      type: wait
+      duration: 3
+
+  # 步骤 2: 执行一些命令
+  - name: "输入 ls 命令"
+    action:
+      type: send_text
+      text: "ls -la"
+    timeout: 5
+
+  - name: "发送回车"
+    action:
+      type: send_key
+      key: "ret"
+    timeout: 5
+
+  - name: "等待命令执行"
+    action:
+      type: wait
+      duration: 2
+
+  # 步骤 3: 通过 QGA 执行命令验证
+  - name: "通过 QGA 检查系统信息"
+    action:
+      type: exec_command
+      command: "uname -a"
+    timeout: 10
+
+  - name: "等待"
+    action:
+      type: wait
+      duration: 1
+
+  # 步骤 4: 关闭终端
+  - name: "关闭终端 (Ctrl+D)"
+    action:
+      type: send_key
+      key: "ctrl-d"
+    timeout: 5
+
+  - name: "等待终端关闭"
+    action:
+      type: wait
+      duration: 2

@@ -1,0 +1,54 @@
+# 基础键盘输入测试场景
+#
+# 功能: 测试 QMP 协议的键盘输入功能
+# 要求:
+#   - 虚拟机必须正在运行
+#   - 虚拟机配置了 QMP socket
+#
+# 使用方法:
+#   export ATP_TEST_VM=your-vm-name
+#   cargo test --test e2e_tests test_qmp_keyboard_input -- --nocapture --ignored
+
+name: "basic-keyboard-test"
+description: "QMP 键盘输入基础测试"
+target_host: "qemu:///system"
+target_domain: "test-vm"  # 修改为你的虚拟机名称
+
+tags:
+  - "keyboard"
+  - "qmp"
+  - "basic"
+
+steps:
+  - name: "1. 发送 Enter 键"
+    action:
+      type: send_key
+      key: "ret"
+    verify: false
+    timeout: 10
+
+  - name: "2. 等待 500ms"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "3. 发送 'hello' 文本"
+    action:
+      type: send_text
+      text: "hello"
+    verify: false
+    timeout: 10
+
+  - name: "4. 等待 500ms"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "5. 发送 Enter 键确认"
+    action:
+      type: send_key
+      key: "ret"
+    verify: false
+    timeout: 10

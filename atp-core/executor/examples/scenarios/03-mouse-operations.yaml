@@ -1,0 +1,74 @@
+# 鼠标操作测试场景
+#
+# 功能: 测试 SPICE 协议的鼠标控制功能
+# 要求:
+#   - 虚拟机正在运行
+#   - 虚拟机配置了 SPICE 显示
+#   - 虚拟机分辨率已知 (用于计算点击坐标)
+#
+# 使用方法:
+#   export ATP_TEST_VM=your-vm-name
+#   cargo test --test e2e_tests test_spice_mouse_operations -- --nocapture --ignored
+
+name: "mouse-operations-test"
+description: "SPICE 鼠标操作测试"
+target_host: "qemu:///system"
+target_domain: "test-vm"
+
+tags:
+  - "mouse"
+  - "spice"
+  - "input"
+
+steps:
+  - name: "1. 左键点击屏幕左上角 (100, 100)"
+    action:
+      type: mouse_click
+      x: 100
+      y: 100
+      button: "left"
+    verify: false
+    timeout: 10
+
+  - name: "2. 等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "3. 左键点击屏幕中央 (800, 400)"
+    action:
+      type: mouse_click
+      x: 800
+      y: 400
+      button: "left"
+    verify: false
+    timeout: 10
+
+  - name: "4. 等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "5. 右键点击 (200, 200) - 打开上下文菜单"
+    action:
+      type: mouse_click
+      x: 200
+      y: 200
+      button: "right"
+    verify: false
+    timeout: 10
+
+  - name: "6. 等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "7. 按 ESC 键关闭菜单"
+    action:
+      type: send_key
+      key: "esc"
+    verify: false
+    timeout: 10

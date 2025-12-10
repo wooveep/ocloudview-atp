@@ -1,0 +1,92 @@
+# 混合协议操作测试场景
+#
+# 功能: 综合测试 QMP + QGA + SPICE 三种协议的集成
+# 要求:
+#   - 虚拟机正在运行
+#   - 配置了 QMP socket
+#   - 安装了 qemu-guest-agent
+#   - 配置了 SPICE 显示
+#
+# 使用方法:
+#   export ATP_TEST_VM=your-vm-name
+#   cargo test --test e2e_tests test_mixed_protocol_scenario -- --nocapture --ignored
+
+name: "mixed-protocol-test"
+description: "混合协议操作测试 (QMP + QGA + SPICE)"
+target_host: "qemu:///system"
+target_domain: "test-vm"
+
+tags:
+  - "integration"
+  - "qmp"
+  - "qga"
+  - "spice"
+
+steps:
+  - name: "1. QGA: 获取系统信息"
+    action:
+      type: exec_command
+      command: "echo '=== System Information ===' && uname -a && echo ''"
+    verify: false
+    timeout: 10
+
+  - name: "2. 等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "3. QGA: 查看内存使用"
+    action:
+      type: exec_command
+      command: "free -h"
+    verify: false
+    timeout: 10
+
+  - name: "4. 等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "5. SPICE: 鼠标点击激活窗口"
+    action:
+      type: mouse_click
+      x: 500
+      y: 300
+      button: "left"
+    verify: false
+    timeout: 10
+
+  - name: "6. 等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+    verify: false
+
+  - name: "7. QMP: 发送键盘输入"
+    action:
+      type: send_text
+      text: "test"
+    verify: false
+    timeout: 10
+
+  - name: "8. QMP: 发送 Enter 键"
+    action:
+      type: send_key
+      key: "ret"
+    verify: false
+    timeout: 10
+
+  - name: "9. 等待 2 秒"
+    action:
+      type: wait
+      duration: 2
+    verify: false
+
+  - name: "10. QGA: 验证测试完成"
+    action:
+      type: exec_command
+      command: "echo 'Mixed protocol test completed successfully' && date"
+    verify: false
+    timeout: 10

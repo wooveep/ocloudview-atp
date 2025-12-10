@@ -1,0 +1,48 @@
+[package]
+name = "atp-executor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ATP 执行器 - 测试场景执行引擎"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+# 依赖其他核心 crate
+atp-transport = { path = "../transport" }
+atp-protocol = { path = "../protocol" }
+atp-storage = { path = "../storage" }  # 数据库支持
+atp-vdiplatform = { path = "../vdiplatform" }  # VDI 平台集成
+
+# 时间处理 (用于报告时间戳)
+chrono = { workspace = true }
+
+# YAML 支持
+serde_yaml = "0.9"
+
+# 异步通道
+async-channel = "2.1"
+
+# Libvirt 绑定
+virt = { workspace = true }
+
+# 配置文件支持
+toml = "0.8"
+dirs = "5.0"
+
+# HTTP 客户端 (用于连通性测试)
+reqwest = { version = "0.11", features = ["json"] }
+
+# MD5 加密 (用于 VDI 密码加密)
+md5 = "0.7"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true }

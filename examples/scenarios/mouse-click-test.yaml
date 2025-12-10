@@ -1,0 +1,41 @@
+name: "鼠标点击测试"
+description: "测试虚拟机鼠标操作功能"
+tags:
+  - mouse
+  - basic
+  - test
+
+steps:
+  - name: "鼠标移动到 (100, 100)"
+    action:
+      type: mouse_click
+      x: 100
+      y: 100
+      button: "left"
+    timeout: 5
+
+  - name: "等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+
+  - name: "右键点击 (200, 200)"
+    action:
+      type: mouse_click
+      x: 200
+      y: 200
+      button: "right"
+    timeout: 5
+
+  - name: "等待 1 秒"
+    action:
+      type: wait
+      duration: 1
+
+  - name: "双击 (150, 150)"
+    action:
+      type: mouse_click
+      x: 150
+      y: 150
+      button: "left"
+    timeout: 5

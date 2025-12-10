@@ -1,0 +1,24 @@
+[package]
+name = "atp-transport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ATP 传输层 - 多主机连接池和并发管理"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+virt = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+
+# 连接池
+deadpool = "0.10"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
