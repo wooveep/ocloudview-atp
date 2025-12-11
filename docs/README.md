@@ -1,174 +1,259 @@
 # OCloudView ATP 文档中心
 
-## 📚 文档导航
+## 项目概览
 
-欢迎来到 OCloudView ATP（自动化测试平台）的文档中心。本目录包含了项目的架构设计、开发指南、实现总结等完整文档。
+**OCloudView ATP** (Automated Testing Platform) 是一个用于虚拟化环境的输入自动化测试和验证平台。
 
----
-
-## 🏗️ 架构设计
-
-### 核心架构文档
-- **[分层架构设计](LAYERED_ARCHITECTURE.md)** ⭐ 推荐首先阅读
-  - 系统整体分层架构
-  - 各层职责和组件说明
-  - 数据流向和交互关系
-  - 项目目录结构
-
-- **[连接模式设计](CONNECTION_MODES.md)**
-  - Libvirt 复用模式（QMP/QGA/VirtioSerial）
-  - Spice 独立多通道模式
-  - URI 格式和配置
-
-### VDI 平台集成
-- **[VDI 平台测试设计](VDI_PLATFORM_TESTING.md)**
-  - VDI 平台 API 客户端
-  - 场景编排器设计
-  - 端到端集成测试
-  - 使用示例
+| 项目属性 | 值 |
+|---------|-----|
+| 当前版本 | v0.4.0 |
+| 整体进度 | 83% |
+| 代码行数 | ~15,200+ 行 |
+| 文档数量 | 44 个 |
+| 测试用例 | 66+ 个 |
+| 最后更新 | 2025-12-11 |
 
 ---
 
-## 📖 开发指南
+## 文档导航
 
-### 快速上手
-- **[快速开始指南](QUICKSTART.md)**
-  - 环境准备
-  - 项目构建
-  - 运行示例
-  - 常见问题
+### 1. 快速开始
 
-- **[开发指南](DEVELOPMENT.md)**
-  - 开发环境搭建
-  - 代码规范
-  - 测试方法
-  - 调试技巧
-
-### 协议使用指南
-- **[QGA 使用指南](QGA_GUIDE.md)**
-  - QEMU Guest Agent 介绍
-  - 常用命令示例
-  - 最佳实践
+| 文档 | 说明 |
+|------|------|
+| [快速开始指南](QUICKSTART.md) | 环境准备、项目构建、运行示例 |
+| [开发指南](DEVELOPMENT.md) | 开发环境搭建、代码规范、调试技巧 |
+| [测试配置指南](TESTING_CONFIG_GUIDE.md) | test.toml 配置、环境变量说明 |
 
 ---
 
-## ✅ 实现总结
+### 2. 架构设计
 
-按阶段记录了详细的实现过程、技术挑战和解决方案：
-
-- **[阶段1: 传输层实现](STAGE1_TRANSPORT_IMPLEMENTATION.md)**
-  - 连接管理（自动重连、心跳检测）
-  - 连接池（策略、扩缩容、监控）
-  - 传输管理器（并发执行、负载均衡）
-  - 代码统计：~1,310 行
-
-- **[阶段2: 协议层实现](STAGE2_PROTOCOL_IMPLEMENTATION.md)**
-  - QMP 协议（Unix Socket、键盘输入）
-  - QGA 协议（命令执行、输出捕获）
-  - 协议抽象和注册中心
-  - 代码统计：~1,100 行
+| 文档 | 说明 | 优先级 |
+|------|------|--------|
+| [分层架构设计](LAYERED_ARCHITECTURE.md) | 系统整体分层架构、组件说明 | ⭐⭐⭐ 必读 |
+| [连接模式设计](CONNECTION_MODES.md) | Libvirt复用模式、SPICE多通道模式 | ⭐⭐ |
+| [Guest验证服务器设计](GUEST_VERIFICATION_SERVER_DESIGN.md) | 验证服务器架构、VM ID路由 | ⭐⭐ |
+| [VM ID映射方案](VM_ID_MAPPING_SOLUTIONS.md) | VDI与libvirt虚拟机ID映射 | ⭐ |
+| [数据存储分析](DATA_STORAGE_ANALYSIS.md) | 存储层需求分析和设计 | ⭐ |
 
 ---
 
-## 📋 项目管理
+### 3. 实现总结 (按阶段)
 
-- **[开发 TODO 清单](../TODO.md)**
-  - 开发任务清单
-  - 进度跟踪
-  - 优先级标记
-  - 代码统计
-
----
-
-## 🔧 API 参考
-
-### VDI 平台 API
-- **[OCloudView 9.0 API 规范](Ocloud%20View%209.0接口文档_OpenAPI.json)** (OpenAPI 3.0)
-- **[OCloudView API 文档](Ocloud%20View接口文档.doc)** (Word 文档)
+| 阶段 | 文档 | 完成度 |
+|------|------|--------|
+| 阶段1 | [传输层实现](STAGE1_TRANSPORT_IMPLEMENTATION.md) | 85% |
+| 阶段2 | [协议层实现](STAGE2_PROTOCOL_IMPLEMENTATION.md) | 70% |
+| 阶段4 | [执行器实现](STAGE4_EXECUTOR_IMPLEMENTATION.md) | 85% |
+| 阶段5 | [CLI实现](STAGE5_CLI_IMPLEMENTATION.md) | 90% |
+| 阶段8 | [测试框架](STAGE8_TESTING.md) | 65% |
 
 ---
 
-## 📁 归档文档
+### 4. 协议与技术指南
 
-以下文档已被新文档替代或不再维护，仅作参考：
+#### 4.1 协议实现
+
+| 文档 | 说明 |
+|------|------|
+| [QGA使用指南](QGA_GUIDE.md) | QEMU Guest Agent命令和最佳实践 |
+| [VirtIO Serial指南](VIRTIO_SERIAL_GUIDE.md) | 自定义协议开发指南 |
+| [SPICE协议实现](SPICE_PROTOCOL_IMPLEMENTATION.md) | SPICE多通道架构和实现 |
+| [USB重定向实现指南](USB_REDIRECTION_IMPLEMENTATION_GUIDE.md) | USB重定向协议详解 |
+| [鼠标操作指南](MOUSE_OPERATIONS_GUIDE.md) | SPICE鼠标集成和QGA备用方案 |
+| [SPICE鼠标集成总结](SPICE_MOUSE_INTEGRATION_SUMMARY.md) | SPICE鼠标实现总结 |
+
+#### 4.2 数据库与存储
+
+| 文档 | 说明 |
+|------|------|
+| [数据库实现设计](DATABASE_IMPLEMENTATION.md) | SQLite架构和Schema设计 |
+| [数据库使用指南](DATABASE_USAGE_GUIDE.md) | 报告查询、备份恢复操作 |
+| [数据库集成总结](DATABASE_INTEGRATION_SUMMARY.md) | Executor和CLI集成详情 |
+
+#### 4.3 测试配置
+
+| 文档 | 说明 |
+|------|------|
+| [测试配置指南](TESTING_CONFIG_GUIDE.md) | 完整的测试配置指南 |
+| [测试配置实现](TEST_CONFIG_IMPLEMENTATION.md) | TestConfig模块设计 |
+| [测试配置实现总结](TEST_CONFIG_IMPLEMENTATION_SUMMARY.md) | 配置加载模块总结 |
+| [E2E测试指南](E2E_TESTING_GUIDE.md) | 端到端测试配置和运行 |
+| [E2E测试总结](E2E_TESTING_SUMMARY.md) | E2E测试框架实现总结 |
+
+---
+
+### 5. VDI平台集成
+
+| 文档 | 说明 |
+|------|------|
+| [VDI平台测试设计](VDI_PLATFORM_TESTING.md) | VDI API客户端和场景编排 |
+| [VDI+libvirt集成报告](VDI_LIBVIRT_INTEGRATION.md) | 完整集成测试报告 |
+| [VDI登录API指南](VDI_LOGIN_API_GUIDE.md) | MD5密码加密和Token认证 |
+| [VDI API发现](VDI_API_DISCOVERY.md) | Swagger API文档解析 |
+| [CLI VDI命令](CLI_VDI_COMMANDS.md) | atp vdi 命令使用指南 |
+| [连通性测试指南](CONNECTIVITY_TEST_GUIDE.md) | VDI和libvirt连通性测试 |
+
+---
+
+### 6. Guest验证器
+
+| 文档 | 说明 | 平台 |
+|------|------|------|
+| [Guest验证器总结](GUEST_VERIFICATION_SUMMARY.md) | 验证器整体架构和功能 | 通用 |
+| [Windows验证器实现](WINDOWS_VERIFIER_IMPLEMENTATION.md) | Hook API实现详解 | Windows |
+| [Windows验证器部署](WINDOWS_VERIFIER_DEPLOYMENT.md) | 编译、安装、配置 | Windows |
+| [Windows验证器总结](WINDOWS_VERIFIER_SUMMARY.md) | Windows实现总结 | Windows |
+
+---
+
+### 7. 项目分析与规划
+
+| 文档 | 说明 |
+|------|------|
+| [项目完成度分析](PROJECT_COMPLETION_ANALYSIS.md) | 各模块完成度评估 |
+| [Executor/Orchestrator分析](EXECUTOR_ORCHESTRATOR_ANALYSIS.md) | 执行器合并分析 |
+| [迁移计划](EXECUTOR_ORCHESTRATOR_MIGRATION_PLAN.md) | Orchestrator到Executor迁移 |
+
+---
+
+### 8. 部署指南
+
+| 文档 | 说明 |
+|------|------|
+| [便携式构建指南](deployment/PORTABLE_BUILD_GUIDE.md) | 便携式二进制打包 |
+| [GLIBC兼容性指南](deployment/GLIBC_COMPATIBILITY_GUIDE.md) | 跨系统部署兼容性 |
+
+---
+
+### 9. 归档文档
 
 <details>
-<summary>点击展开查看归档文档列表</summary>
+<summary>点击展开归档文档列表</summary>
 
-### 已归档的架构文档
-- **[旧架构设计](archive/ARCHITECTURE.md)**
-  - 原始的控制端-代理端架构
-  - 已被分层架构替代
+以下文档已被新文档替代或不再维护：
 
-- **[架构更新总结](archive/ARCHITECTURE_UPDATE_SUMMARY.md)**
-  - 架构演进过程
-  - 已整合到最新架构文档
-
-- **[重构计划](archive/REFACTORING_PLAN.md)**
-  - 项目重构规划
-  - 重构已完成
-
-### 已归档的总结文档
-- **[VDI 平台测试更新](archive/VDI_PLATFORM_TESTING_UPDATE.md)**
-  - 已合并到 VDI_PLATFORM_TESTING.md
-
-- **[项目结构总结](archive/PROJECT_STRUCTURE_SUMMARY.md)**
-  - 已整合到分层架构文档
+| 文档 | 说明 |
+|------|------|
+| [旧架构设计](archive/ARCHITECTURE.md) | 已被分层架构替代 |
+| [架构更新总结](archive/ARCHITECTURE_UPDATE_SUMMARY.md) | 已整合到最新文档 |
+| [重构计划](archive/REFACTORING_PLAN.md) | 重构已完成 |
+| [VDI平台测试更新](archive/VDI_PLATFORM_TESTING_UPDATE.md) | 已合并 |
+| [项目结构总结](archive/PROJECT_STRUCTURE_SUMMARY.md) | 已整合 |
+| [连通性测试README](archive/CONNECTIVITY_TEST_README.md) | 已合并到指南 |
+| [VDI连通性测试总结](archive/VDI_CONNECTIVITY_TEST_SUMMARY.md) | 已归档 |
+| [测试配置README](archive/TEST_CONFIG_README.md) | 已合并到指南 |
 
 </details>
 
 ---
 
-## 🎯 推荐阅读路径
+## 推荐阅读路径
 
-### 新手入门
-1. [快速开始指南](QUICKSTART.md) - 了解如何运行项目
-2. [分层架构设计](LAYERED_ARCHITECTURE.md) - 理解系统架构
-3. [开发指南](DEVELOPMENT.md) - 开始开发
+### 新手入门 (30分钟)
 
-### 深入理解
-1. [分层架构设计](LAYERED_ARCHITECTURE.md) - 完整架构
-2. [连接模式设计](CONNECTION_MODES.md) - 连接机制
-3. [VDI 平台测试设计](VDI_PLATFORM_TESTING.md) - VDI 集成
-4. [阶段1实现总结](STAGE1_TRANSPORT_IMPLEMENTATION.md) - 传输层实现
-5. [阶段2实现总结](STAGE2_PROTOCOL_IMPLEMENTATION.md) - 协议层实现
+```
+1. QUICKSTART.md          → 环境准备和快速运行
+2. LAYERED_ARCHITECTURE.md → 理解系统架构
+3. CLI_VDI_COMMANDS.md     → 使用CLI工具
+```
 
-### 协议开发
-1. [协议层架构](LAYERED_ARCHITECTURE.md#2-协议层-protocol-layer)
-2. [QGA 使用指南](QGA_GUIDE.md)
-3. [阶段2实现总结](STAGE2_PROTOCOL_IMPLEMENTATION.md)
+### 开发者指南 (2小时)
 
-### VDI 平台测试
-1. [VDI 平台测试设计](VDI_PLATFORM_TESTING.md)
-2. [VDI API 参考](Ocloud%20View%209.0接口文档_OpenAPI.json)
+```
+1. LAYERED_ARCHITECTURE.md       → 整体架构
+2. CONNECTION_MODES.md           → 连接机制
+3. STAGE1_TRANSPORT_IMPLEMENTATION.md → 传输层
+4. STAGE2_PROTOCOL_IMPLEMENTATION.md  → 协议层
+5. DEVELOPMENT.md                → 开发规范
+```
+
+### 协议开发 (3小时)
+
+```
+1. QGA_GUIDE.md                  → QGA基础
+2. VIRTIO_SERIAL_GUIDE.md        → 自定义协议
+3. SPICE_PROTOCOL_IMPLEMENTATION.md → SPICE协议
+4. USB_REDIRECTION_IMPLEMENTATION_GUIDE.md → USB重定向
+```
+
+### 测试开发 (2小时)
+
+```
+1. TESTING_CONFIG_GUIDE.md       → 测试配置
+2. E2E_TESTING_GUIDE.md          → E2E测试
+3. STAGE8_TESTING.md             → 测试框架
+```
+
+### VDI平台集成 (1小时)
+
+```
+1. VDI_PLATFORM_TESTING.md       → VDI设计
+2. VDI_LOGIN_API_GUIDE.md        → 登录认证
+3. CLI_VDI_COMMANDS.md           → CLI使用
+```
 
 ---
 
-## 📝 文档贡献
+## 模块级文档
+
+项目中各模块也包含独立的README文档：
+
+| 路径 | 说明 |
+|------|------|
+| [atp-core/verification-server/README.md](../atp-core/verification-server/README.md) | 验证服务器文档 |
+| [atp-core/executor/examples/scenarios/README.md](../atp-core/executor/examples/scenarios/README.md) | E2E测试场景说明 |
+| [guest-verifier/README.md](../guest-verifier/README.md) | Guest验证器文档 |
+| [examples/vdi-scenarios/README.md](../examples/vdi-scenarios/README.md) | VDI场景示例说明 |
+
+---
+
+## 根目录文档
+
+| 文档 | 说明 |
+|------|------|
+| [README.md](../README.md) | 项目主文档 |
+| [TODO.md](../TODO.md) | 开发任务清单 |
+
+---
+
+## 文档统计
+
+| 类别 | 数量 | 行数 |
+|------|------|------|
+| 架构设计 | 5 | ~3,000 |
+| 实现总结 | 5 | ~2,500 |
+| 技术指南 | 15 | ~8,000 |
+| VDI集成 | 6 | ~3,000 |
+| 验证器 | 4 | ~2,000 |
+| 项目分析 | 4 | ~3,000 |
+| 部署指南 | 2 | ~500 |
+| 归档 | 8 | ~1,500 |
+| **总计** | **49** | **~23,500** |
+
+---
+
+## 文档贡献
 
 ### 文档规范
+
 - 使用 Markdown 格式
-- 添加目录和锚点链接
-- 包含代码示例和图表
-- 及时更新过时内容
+- 表格用于结构化信息
+- 代码块标注语言类型
+- 及时更新版本和日期
 
-### 提交文档更新
-1. 确保文档准确性
-2. 运行拼写检查
-3. 更新文档索引（本 README）
-4. 提交 PR 并说明变更
+### 命名规范
 
----
-
-## 🔗 相关链接
-
-- **代码仓库**: [atp-core/](../atp-core/)
-- **示例场景**: [examples/](../examples/)
-- **配置文件**: [config/](../config/)
-- **TODO 清单**: [TODO.md](../TODO.md)
+| 类型 | 命名格式 | 示例 |
+|------|----------|------|
+| 实现总结 | STAGE{N}_{MODULE}_IMPLEMENTATION.md | STAGE1_TRANSPORT_IMPLEMENTATION.md |
+| 使用指南 | {MODULE}_GUIDE.md | QGA_GUIDE.md |
+| 设计文档 | {FEATURE}_DESIGN.md | CONNECTION_MODES.md |
+| 分析报告 | {TOPIC}_ANALYSIS.md | PROJECT_COMPLETION_ANALYSIS.md |
 
 ---
 
-**最后更新**: 2025-11-24
+**最后更新**: 2025-12-11
 **维护者**: OCloudView ATP Team
-**项目版本**: v0.1.0
+**项目版本**: v0.4.0
