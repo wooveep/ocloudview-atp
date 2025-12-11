@@ -70,18 +70,45 @@ impl VdiClient {
     }
 
     /// 认证登录
+    ///
+    /// # Arguments
+    /// * `username` - 用户名
+    /// * `password` - 明文密码(将自动转换为MD5)
     pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
         info!("VDI 客户端登录: {}", username);
 
-        // TODO: 实现实际的登录逻辑
-        // 这里需要根据实际的 VDI 平台 API 实现
-        let _login_request = serde_json::json!({
+        // 将密码转换为 MD5
+        let password_md5 = format!("{:x}", md5::compute(password.as_bytes()));
+
+        let login_url = format!("{}/ocloud/v1/login", self.base_url);
+        let login_data = serde_json::json!({
             "username": username,
-            "password": password,
+            "password": password_md5,
+            "client": ""
         });
 
-        // 模拟获取 token
-        let token = "mock_token".to_string();
+        let response = self.http_client
+            .post(&login_url)
+            .json(&login_data)
+            .send()
+            .await
+            .map_err(|e| VdiError::HttpError(e.to_string()))?;
+
+        let login_result: serde_json::Value = response.json().await
+            .map_err(|e| VdiError::ParseError(e.to_string()))?;
+
+        // 检查登录状态
+        if login_result["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = login_result["msg"].as_str().unwrap_or("未知错误");
+            return Err(VdiError::AuthError(format!("VDI 登录失败: {}", msg)));
+        }
+
+        // 提取 token
+        let token = login_result["data"]["token"]
+            .as_str()
+            .ok_or_else(|| VdiError::AuthError("未获取到 Token".to_string()))?
+            .to_string();
+
         *self.access_token.write().await = Some(token);
 
         info!("VDI 客户端登录成功");
@@ -96,27 +123,27 @@ impl VdiClient {
     }
 
     /// 获取虚拟机管理 API
-    pub fn domain(&self) -> DomainApi {
+    pub fn domain(&self) -> DomainApi<'_> {
         DomainApi::new(self)
     }
 
     /// 获取桌面池管理 API
-    pub fn desk_pool(&self) -> DeskPoolApi {
+    pub fn desk_pool(&self) -> DeskPoolApi<'_> {
         DeskPoolApi::new(self)
     }
 
     /// 获取主机管理 API
-    pub fn host(&self) -> HostApi {
+    pub fn host(&self) -> HostApi<'_> {
         HostApi::new(self)
     }
 
     /// 获取模板管理 API
-    pub fn model(&self) -> ModelApi {
+    pub fn model(&self) -> ModelApi<'_> {
         ModelApi::new(self)
     }
 
     /// 获取用户管理 API
-    pub fn user(&self) -> UserApi {
+    pub fn user(&self) -> UserApi<'_> {
         UserApi::new(self)
     }
 
@@ -136,7 +163,7 @@ impl VdiClient {
 
         let mut request = self.http_client
             .request(method.clone(), &url)
-            .header("Authorization", format!("Bearer {}", token_str))
+            .header("Token", token_str)
             .header("Content-Type", "application/json");
 
         if let Some(body) = body {
@@ -168,6 +195,13 @@ impl VdiClient {
     /// 获取基础 URL
     pub(crate) fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// 获取当前访问令牌
+    pub async fn get_token(&self) -> Result<String> {
+        let token = self.access_token.read().await;
+        token.clone()
+            .ok_or_else(|| VdiError::AuthError("未认证，请先登录".to_string()))
     }
 }
 
