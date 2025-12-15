@@ -41,6 +41,20 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::collections::HashMap;
 
+// ========================================
+// 辅助函数
+// ========================================
+
+/// 获取测试 VM 名称 (从配置或环境变量)
+fn get_test_vm_name() -> String {
+    std::env::var("ATP_TEST_VM").unwrap_or_else(|_| "test-vm".to_string())
+}
+
+/// 获取测试 Libvirt URI (从配置或环境变量)
+fn get_test_host_uri() -> String {
+    std::env::var("ATP_TEST_HOST").unwrap_or_else(|_| "qemu:///system".to_string())
+}
+
 /// 初始化测试环境 (使用 TestConfig)
 async fn setup_test_runner() -> (ScenarioRunner, TestConfig) {
     // 1. 加载测试配置 (从文件或环境变量)
@@ -92,7 +106,7 @@ async fn setup_test_runner() -> (ScenarioRunner, TestConfig) {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境才能运行
 async fn test_basic_scenario_wait() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
 
     let scenario = Scenario {
         name: "basic-wait-test".to_string(),
@@ -132,7 +146,7 @@ async fn test_basic_scenario_wait() {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境
 async fn test_qmp_keyboard_input() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
     let vm_name = get_test_vm_name();
 
     let scenario = Scenario {
@@ -171,7 +185,7 @@ async fn test_qmp_keyboard_input() {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境
 async fn test_qga_command_execution() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
     let vm_name = get_test_vm_name();
 
     let scenario = Scenario {
@@ -229,7 +243,7 @@ async fn test_qga_command_execution() {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境
 async fn test_spice_mouse_operations() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
     let vm_name = get_test_vm_name();
 
     let scenario = Scenario {
@@ -285,7 +299,7 @@ async fn test_spice_mouse_operations() {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境
 async fn test_mixed_protocol_scenario() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
     let vm_name = get_test_vm_name();
 
     let scenario = Scenario {
@@ -469,7 +483,7 @@ async fn test_load_scenario_from_json() {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境
 async fn test_command_failure_handling() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
     let vm_name = get_test_vm_name();
 
     let scenario = Scenario {
@@ -527,7 +541,7 @@ async fn test_command_failure_handling() {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境
 async fn test_timeout_handling() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
     let vm_name = get_test_vm_name();
 
     let scenario = Scenario {
@@ -561,7 +575,7 @@ async fn test_timeout_handling() {
 #[tokio::test]
 #[ignore] // 需要实际虚拟机环境
 async fn test_scenario_execution_performance() {
-    let mut runner = setup_test_runner().await;
+    let (mut runner, _config) = setup_test_runner().await;
     let vm_name = get_test_vm_name();
 
     // 创建包含10个快速命令的场景

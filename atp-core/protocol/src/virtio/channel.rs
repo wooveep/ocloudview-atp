@@ -192,22 +192,33 @@ impl VirtioChannel {
         // 简单的 XML 解析，查找 channel 元素
         // 格式：<target type='virtio' name='com.vmagent.sock'/>
         //      <source mode='bind' path='/var/lib/libvirt/qemu/channel/target/...'/>
+        // 注意：source 和 target 元素顺序可能不同
 
         let lines: Vec<&str> = xml.lines().collect();
         let mut in_channel = false;
-        let mut current_channel_name = String::new();
+        let mut current_channel_name: Option<String> = None;
+        let mut current_source_path: Option<String> = None;
 
         for (_i, line) in lines.iter().enumerate() {
             // 检查是否是 channel 开始标签
             if line.contains("<channel type='unix'>") {
                 in_channel = true;
+                current_channel_name = None;
+                current_source_path = None;
                 continue;
             }
 
             // 检查 channel 结束
             if line.contains("</channel>") {
+                // 检查当前 channel 是否匹配
+                if let (Some(ref name), Some(ref path)) = (&current_channel_name, &current_source_path) {
+                    if name == channel_name {
+                        return Ok(PathBuf::from(path));
+                    }
+                }
                 in_channel = false;
-                current_channel_name.clear();
+                current_channel_name = None;
+                current_source_path = None;
                 continue;
             }
 
@@ -218,14 +229,14 @@ impl VirtioChannel {
             // 查找 target name
             if line.contains("<target") && line.contains("name=") {
                 if let Some(name) = Self::extract_attribute(line, "name") {
-                    current_channel_name = name;
+                    current_channel_name = Some(name);
                 }
             }
 
-            // 如果找到匹配的通道名称，查找 source path
-            if current_channel_name == channel_name && line.contains("<source") {
+            // 查找 source path
+            if line.contains("<source") && line.contains("path=") {
                 if let Some(path) = Self::extract_attribute(line, "path") {
-                    return Ok(PathBuf::from(path));
+                    current_source_path = Some(path);
                 }
             }
         }

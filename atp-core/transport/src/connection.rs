@@ -6,7 +6,10 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use virt::connect::Connect;
 
-use crate::{HostInfo, Result, TransportConfig, TransportError};
+use crate::{
+    HostInfo, Result, TransportConfig, TransportError,
+    LibvirtDomainState, LibvirtDomainInfo, ListDomainsFilter,
+};
 
 /// 连接状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +284,117 @@ impl HostConnection {
         *self.last_active.lock().await = chrono::Utc::now();
 
         Ok(domain)
+    }
+
+    /// 获取虚拟机列表
+    ///
+    /// # Arguments
+    /// * `filter` - 过滤选项，可以指定只查询活跃/非活跃的虚拟机，以及按状态筛选
+    ///
+    /// # Example
+    /// ```ignore
+    /// // 获取所有虚拟机
+    /// let all_vms = conn.list_domains(ListDomainsFilter::all()).await?;
+    ///
+    /// // 只获取运行中的虚拟机
+    /// let running_vms = conn.list_domains(ListDomainsFilter::active_only()).await?;
+    ///
+    /// // 按特定状态筛选
+    /// let filter = ListDomainsFilter::all()
+    ///     .with_states(vec![LibvirtDomainState::Running, LibvirtDomainState::Paused]);
+    /// let vms = conn.list_domains(filter).await?;
+    /// ```
+    pub async fn list_domains(&self, filter: ListDomainsFilter) -> Result<Vec<LibvirtDomainInfo>> {
+        let state = *self.state.lock().await;
+        if state != ConnectionState::Connected {
+            return Err(TransportError::Disconnected);
+        }
+
+        let conn_guard = self.connection.lock().await;
+        let conn = conn_guard
+            .as_ref()
+            .ok_or_else(|| TransportError::Disconnected)?;
+
+        let flags = filter.to_flags();
+        let filter_states = filter.states.clone();
+
+        // 使用 spawn_blocking 因为 libvirt 的操作是同步的
+        let conn_clone = conn.clone();
+        let domains_result = tokio::task::spawn_blocking(move || {
+            conn_clone.list_all_domains(flags)
+        })
+        .await
+        .map_err(|e| TransportError::ConnectionFailed(format!("任务执行失败: {}", e)))?
+        .map_err(|e| TransportError::LibvirtError(format!("获取虚拟机列表失败: {}", e)))?;
+
+        let mut result = Vec::new();
+        for domain in domains_result {
+            // 获取虚拟机名称
+            let name = match domain.get_name() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            // 获取状态
+            let state = match domain.get_state() {
+                Ok((st, _)) => LibvirtDomainState::from_virt_state(st),
+                Err(_) => LibvirtDomainState::Unknown,
+            };
+
+            // 如果设置了状态筛选，检查是否匹配
+            if let Some(ref states) = filter_states {
+                if !states.contains(&state) {
+                    continue;
+                }
+            }
+
+            // 获取虚拟机信息
+            let (vcpu, memory_mb, max_memory_mb) = match domain.get_info() {
+                Ok(info) => (info.nr_virt_cpu, info.memory / 1024, info.max_mem / 1024),
+                Err(_) => (0, 0, 0),
+            };
+
+            // 获取 UUID
+            let uuid = domain.get_uuid_string().ok();
+
+            result.push(LibvirtDomainInfo {
+                name,
+                uuid,
+                state,
+                vcpu,
+                memory_mb,
+                max_memory_mb,
+            });
+        }
+
+        // 更新指标
+        self.metrics.increment_request().await;
+
+        // 更新最后活跃时间
+        *self.last_active.lock().await = chrono::Utc::now();
+
+        Ok(result)
+    }
+
+    /// 获取所有虚拟机列表
+    pub async fn list_all_domains(&self) -> Result<Vec<LibvirtDomainInfo>> {
+        self.list_domains(ListDomainsFilter::all()).await
+    }
+
+    /// 获取运行中的虚拟机列表
+    pub async fn list_running_domains(&self) -> Result<Vec<LibvirtDomainInfo>> {
+        self.list_domains(
+            ListDomainsFilter::active_only()
+                .with_states(vec![LibvirtDomainState::Running])
+        ).await
+    }
+
+    /// 获取已关闭的虚拟机列表
+    pub async fn list_shutoff_domains(&self) -> Result<Vec<LibvirtDomainInfo>> {
+        self.list_domains(
+            ListDomainsFilter::inactive_only()
+                .with_states(vec![LibvirtDomainState::Shutoff])
+        ).await
     }
 
     /// 获取监控指标

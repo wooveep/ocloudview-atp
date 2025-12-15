@@ -440,10 +440,16 @@ mod tests {
         let bytes = header.to_bytes();
         let parsed = SpiceLinkHeader::from_bytes(&bytes).unwrap();
 
-        assert_eq!(parsed.magic, SpiceLinkHeader::MAGIC);
-        assert_eq!(parsed.major_version, 2);
-        assert_eq!(parsed.minor_version, 2);
-        assert_eq!(parsed.size, 100);
+        // 使用局部变量避免 packed struct 字段引用对齐问题
+        let magic = parsed.magic;
+        let major_version = parsed.major_version;
+        let minor_version = parsed.minor_version;
+        let size = parsed.size;
+
+        assert_eq!(magic, SpiceLinkHeader::MAGIC);
+        assert_eq!(major_version, 2);
+        assert_eq!(minor_version, 2);
+        assert_eq!(size, 100);
     }
 
     #[test]
@@ -452,9 +458,14 @@ mod tests {
         let bytes = header.to_bytes();
         let parsed = SpiceDataHeader::from_bytes(&bytes).unwrap();
 
-        assert_eq!(parsed.serial, 12345);
-        assert_eq!(parsed.msg_type, 1);
-        assert_eq!(parsed.size, 256);
+        // 使用局部变量避免 packed struct 字段引用对齐问题
+        let serial = parsed.serial;
+        let msg_type = parsed.msg_type;
+        let size = parsed.size;
+
+        assert_eq!(serial, 12345);
+        assert_eq!(msg_type, 1);
+        assert_eq!(size, 256);
     }
 
     #[test]

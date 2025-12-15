@@ -1,10 +1,12 @@
 //! VDI 平台管理和验证命令
 
 use crate::VdiAction;
+use crate::commands::common::{
+    build_host_id_to_name_map_from_json, connect_libvirt, create_vdi_client,
+};
 use anyhow::{Context, Result};
-use atp_executor::{TestConfig, VdiConfig};
-use atp_transport::{HostConnection, HostInfo};
-use atp_vdiplatform::{VdiClient, client::VdiConfig as VdiClientConfig};
+use atp_executor::TestConfig;
+use atp_vdiplatform::{DomainStatus, HostStatusCode};
 use serde_json::json;
 use std::collections::HashMap;
 use tracing::{error, info};
@@ -53,26 +55,6 @@ pub async fn handle(action: VdiAction) -> Result<()> {
     Ok(())
 }
 
-/// 创建并登录VDI客户端
-async fn create_vdi_client(vdi_config: &VdiConfig) -> Result<VdiClient> {
-    let client_config = VdiClientConfig {
-        connect_timeout: vdi_config.connect_timeout,
-        request_timeout: vdi_config.connect_timeout,
-        max_retries: 3,
-        verify_ssl: vdi_config.verify_ssl,
-    };
-
-    let mut client = VdiClient::new(&vdi_config.base_url, client_config)
-        .context("创建VDI客户端失败")?;
-
-    client
-        .login(&vdi_config.username, &vdi_config.password)
-        .await
-        .context("VDI登录失败")?;
-
-    Ok(client)
-}
-
 /// 验证 VDI 平台与 libvirt 虚拟机状态一致性
 async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) -> Result<()> {
     println!("╔════════════════════════════════════════════════════════════════╗");
@@ -98,14 +80,7 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
     println!("   ✅ 找到 {} 个主机\n", hosts.len());
 
     // 创建主机ID到主机名的映射
-    let mut host_id_to_name: HashMap<String, String> = HashMap::new();
-    for host in &hosts {
-        let host_id = host["id"].as_str().unwrap_or("").to_string();
-        let host_name = host["name"].as_str().unwrap_or("").to_string();
-        if !host_id.is_empty() && !host_name.is_empty() {
-            host_id_to_name.insert(host_id, host_name);
-        }
-    }
+    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
 
     // 3. 从 VDI 获取虚拟机列表
     println!("📋 步骤 3/4: 获取 VDI 虚拟机列表...");
@@ -114,15 +89,8 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
     let mut vdi_vms: HashMap<String, VmInfo> = HashMap::new();
     for domain in &vdi_domains {
         let name = domain["name"].as_str().unwrap_or("").to_string();
-        let status = match domain["status"].as_i64().unwrap_or(-1) {
-            0 => "关机".to_string(),
-            1 => "运行中".to_string(),
-            2 => "挂起".to_string(),
-            3 => "休眠".to_string(),
-            5 => "操作中".to_string(),
-            6 => "升级中".to_string(),
-            _ => "未知".to_string(),
-        };
+        let status_code = domain["status"].as_i64().unwrap_or(-1);
+        let status = DomainStatus::from_code(status_code).display_name().to_string();
         // 使用 hostId 获取主机名
         let host_id = domain["hostId"].as_str().unwrap_or("");
         let host = host_id_to_name
@@ -155,9 +123,9 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
     for host in &hosts {
         let host_name = host["name"].as_str().unwrap_or("");
         let host_ip = host["ip"].as_str().unwrap_or("");
-        let status = host["status"].as_i64().unwrap_or(-1);
+        let host_status = HostStatusCode::from_code(host["status"].as_i64().unwrap_or(-1));
 
-        if status != 1 {
+        if !host_status.is_online() {
             println!("   ⚠️  主机 {} 离线，跳过", host_name);
             continue;
         }
@@ -165,82 +133,54 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
         println!("   🔗 连接主机: {} ({})", host_name, host_ip);
 
         // 尝试连接 libvirt
-        let uris = vec![
-            format!("qemu+tcp://{}/system", host_ip),
-            format!("qemu+ssh://root@{}/system", host_ip),
-        ];
-
-        let mut connected = false;
         let mut libvirt_vms: HashMap<String, LibvirtVmInfo> = HashMap::new();
 
-        for uri in &uris {
-            let host_info = HostInfo {
-                id: host_name.to_string(),
-                host: host_name.to_string(),
-                uri: uri.clone(),
-                tags: vec![],
-                metadata: HashMap::new(),
-            };
+        let conn_result = match connect_libvirt(host_name, host_ip).await {
+            Ok(result) => {
+                info!("   ✅ 连接成功: {}", result.uri);
+                result
+            }
+            Err(e) => {
+                error!("   ❌ {}", e);
+                continue;
+            }
+        };
 
-            let conn = HostConnection::new(host_info);
-            match conn.connect().await {
-                Ok(_) => {
-                    if conn.is_alive().await {
-                        info!("   ✅ 连接成功: {}", uri);
+        // 获取虚拟机列表（包括所有状态的虚拟机）
+        if let Ok(conn_mutex) = conn_result.connection.get_connection().await {
+            let conn_guard = conn_mutex.lock().await;
+            if let Some(conn_ref) = conn_guard.as_ref() {
+                // 获取所有域（包括关闭状态的）
+                // flags: VIR_CONNECT_LIST_DOMAINS_ACTIVE | VIR_CONNECT_LIST_DOMAINS_INACTIVE = 3
+                if let Ok(domains) = conn_ref.list_all_domains(3) {
+                    for domain in &domains {
+                        if let Ok(name) = domain.get_name() {
+                            let state = if let Ok((st, _)) = domain.get_state() {
+                                let state_debug = format!("{:?}", st);
+                                state_debug
+                            } else {
+                                "Unknown".to_string()
+                            };
 
-                        // 获取虚拟机列表（包括所有状态的虚拟机）
-                        if let Ok(conn_mutex) = conn.get_connection().await {
-                            let conn_guard = conn_mutex.lock().await;
-                            if let Some(conn_ref) = conn_guard.as_ref() {
-                                // 获取所有域（包括关闭状态的）
-                                // flags: VIR_CONNECT_LIST_DOMAINS_ACTIVE | VIR_CONNECT_LIST_DOMAINS_INACTIVE = 3
-                                if let Ok(domains) = conn_ref.list_all_domains(3) {
-                                    for domain in &domains {
-                                        if let Ok(name) = domain.get_name() {
-                                            let state = if let Ok((st, _)) = domain.get_state() {
-                                                // 使用 Debug format 输出状态，然后解析为字符串
-                                                let state_debug = format!("{:?}", st);
-                                                // 状态值: Running, Shutoff, Paused, Shutdown, Crashed, PMSuspended, Blocked, NoState
-                                                state_debug
-                                            } else {
-                                                "Unknown".to_string()
-                                            };
+                            let (cpu, memory) = if let Ok(info) = domain.get_info() {
+                                (info.nr_virt_cpu, info.memory / 1024)
+                            } else {
+                                (0, 0)
+                            };
 
-                                            let (cpu, memory) = if let Ok(info) = domain.get_info()
-                                            {
-                                                (info.nr_virt_cpu, info.memory / 1024)
-                                            } else {
-                                                (0, 0)
-                                            };
-
-                                            libvirt_vms.insert(
-                                                name.clone(),
-                                                LibvirtVmInfo {
-                                                    name,
-                                                    state,
-                                                    cpu,
-                                                    memory_mb: memory,
-                                                },
-                                            );
-                                        }
-                                    }
-                                }
-                            }
+                            libvirt_vms.insert(
+                                name.clone(),
+                                LibvirtVmInfo {
+                                    name,
+                                    state,
+                                    cpu,
+                                    memory_mb: memory,
+                                },
+                            );
                         }
-
-                        connected = true;
-                        break;
                     }
                 }
-                Err(e) => {
-                    info!("   ⚠️  连接失败 {}: {}", uri, e);
-                }
             }
-        }
-
-        if !connected {
-            error!("   ❌ 无法连接到主机 {} 的 libvirtd", host_name);
-            continue;
         }
 
         println!("   📊 libvirt 虚拟机数量: {}", libvirt_vms.len());
@@ -405,10 +345,8 @@ async fn list_hosts(config_path: &str) -> Result<()> {
     for host in &hosts {
         let name = host["name"].as_str().unwrap_or("");
         let ip = host["ip"].as_str().unwrap_or("");
-        let status = match host["status"].as_i64().unwrap_or(-1) {
-            1 => "在线 ✅",
-            _ => "离线 ❌",
-        };
+        let status = HostStatusCode::from_code(host["status"].as_i64().unwrap_or(-1))
+            .display_with_emoji();
         let cpu = host["cpuSize"].as_i64().unwrap_or(0);
         let memory_gb = host["memory"].as_f64().unwrap_or(0.0);
 
@@ -436,14 +374,7 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
     let hosts_vec = client.host().list_all().await?;
 
     // 建立主机ID到名称的映射
-    let mut host_id_to_name: HashMap<String, String> = HashMap::new();
-    for host in &hosts_vec {
-        let host_id = host["id"].as_str().unwrap_or("").to_string();
-        let host_name = host["name"].as_str().unwrap_or("").to_string();
-        if !host_id.is_empty() && !host_name.is_empty() {
-            host_id_to_name.insert(host_id, host_name);
-        }
-    }
+    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts_vec);
 
     println!(
         "{:<25} {:<20} {:<15} {:<10} {:<15}",
@@ -464,15 +395,8 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
             }
         }
 
-        let status = match domain["status"].as_i64().unwrap_or(-1) {
-            0 => "关机 ⚪",
-            1 => "运行中 ✅",
-            2 => "挂起 🟡",
-            3 => "休眠 🌙",
-            5 => "操作中 ⚙️",
-            6 => "升级中 ⬆️",
-            _ => "未知 ⚠️",
-        };
+        let status = DomainStatus::from_code(domain["status"].as_i64().unwrap_or(-1))
+            .display_with_emoji();
         let cpu = domain["cpuNum"].as_i64().unwrap_or(0);
         let memory_gb = domain["memory"].as_f64().unwrap_or(0.0) / 1024.0;
 
@@ -503,37 +427,27 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
     for (i, host) in hosts.iter().enumerate() {
         let name = host["name"].as_str().unwrap_or("");
         let ip = host["ip"].as_str().unwrap_or("");
-        let status = host["status"].as_i64().unwrap_or(-1);
+        let host_status = HostStatusCode::from_code(host["status"].as_i64().unwrap_or(-1));
 
         print!("  {}. {} ({}) ", i + 1, name, ip);
 
-        if status != 1 {
-            println!("- 离线 ❌");
+        if !host_status.is_online() {
+            println!("- {}", host_status.display_with_emoji());
             continue;
         }
 
         if test_connection {
             // 测试连接
-            let uri = format!("qemu+tcp://{}/system", ip);
-            let host_info = HostInfo {
-                id: name.to_string(),
-                host: name.to_string(),
-                uri: uri.clone(),
-                tags: vec![],
-                metadata: HashMap::new(),
-            };
-
-            let conn = HostConnection::new(host_info);
-            match conn.connect().await {
-                Ok(_) if conn.is_alive().await => {
+            match connect_libvirt(name, ip).await {
+                Ok(_) => {
                     println!("- 连接成功 ✅");
                 }
-                _ => {
+                Err(_) => {
                     println!("- 连接失败 ❌");
                 }
             }
         } else {
-            println!("- 在线 ✅");
+            println!("- {}", host_status.display_with_emoji());
         }
     }
 

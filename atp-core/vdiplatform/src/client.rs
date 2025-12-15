@@ -7,7 +7,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use tracing::{debug, info, warn};
 
 use crate::error::{VdiError, Result};
-use crate::api::{DomainApi, DeskPoolApi, HostApi, ModelApi, UserApi};
+use crate::api::{
+    DomainApi, DeskPoolApi, HostApi, ModelApi, UserApi,
+    SnapshotApi, StorageApi, NetworkApi, EventApi, RecycleApi,
+};
 
 /// VDI 平台客户端配置
 #[derive(Debug, Clone)]
@@ -145,6 +148,31 @@ impl VdiClient {
     /// 获取用户管理 API
     pub fn user(&self) -> UserApi<'_> {
         UserApi::new(self)
+    }
+
+    /// 获取快照管理 API
+    pub fn snapshot(&self) -> SnapshotApi<'_> {
+        SnapshotApi::new(self)
+    }
+
+    /// 获取存储管理 API
+    pub fn storage(&self) -> StorageApi<'_> {
+        StorageApi::new(self)
+    }
+
+    /// 获取网络管理 API
+    pub fn network(&self) -> NetworkApi<'_> {
+        NetworkApi::new(self)
+    }
+
+    /// 获取事件管理 API
+    pub fn event(&self) -> EventApi<'_> {
+        EventApi::new(self)
+    }
+
+    /// 获取回收站管理 API
+    pub fn recycle(&self) -> RecycleApi<'_> {
+        RecycleApi::new(self)
     }
 
     /// 发送 HTTP 请求

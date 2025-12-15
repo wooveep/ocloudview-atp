@@ -69,6 +69,13 @@ enum Commands {
         #[command(subcommand)]
         action: VdiAction,
     },
+
+    /// PowerShell 远程执行
+    #[command(name = "ps", alias = "powershell")]
+    PowerShell {
+        #[command(subcommand)]
+        action: PowerShellAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -359,6 +366,59 @@ pub enum VdiAction {
     },
 }
 
+#[derive(Subcommand)]
+pub enum PowerShellAction {
+    /// 执行 PowerShell 命令 (通过 QGA 协议)
+    Exec {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "test.toml")]
+        config: String,
+
+        /// 目标虚拟机名称（单个）
+        #[arg(long, conflicts_with_all = ["vms", "all"])]
+        vm: Option<String>,
+
+        /// 目标虚拟机列表（逗号分隔）
+        #[arg(long, conflicts_with_all = ["vm", "all"])]
+        vms: Option<String>,
+
+        /// 所有虚拟机
+        #[arg(long, conflicts_with_all = ["vm", "vms"])]
+        all: bool,
+
+        /// 按主机过滤（与 --all 配合使用）
+        #[arg(short = 'H', long)]
+        host: Option<String>,
+
+        /// 要执行的 PowerShell 命令
+        #[arg(long, conflicts_with = "script_file")]
+        command: Option<String>,
+
+        /// 要执行的 PowerShell 脚本文件路径
+        #[arg(long, conflicts_with = "command")]
+        script_file: Option<String>,
+
+        /// 执行超时时间（秒）
+        #[arg(short, long, default_value = "60")]
+        timeout: u64,
+
+        /// JSON 格式输出
+        #[arg(long)]
+        json_output: bool,
+    },
+
+    /// 列出可用的虚拟机
+    ListVms {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "test.toml")]
+        config: String,
+
+        /// 按主机过滤
+        #[arg(short = 'H', long)]
+        host: Option<String>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -387,6 +447,7 @@ async fn main() -> Result<()> {
         Commands::Report { action } => commands::report::handle(action).await?,
         Commands::Db { action } => commands::db::handle(action).await?,
         Commands::Vdi { action } => commands::vdi::handle(action).await?,
+        Commands::PowerShell { action } => commands::powershell::handle(action).await?,
     }
 
     Ok(())

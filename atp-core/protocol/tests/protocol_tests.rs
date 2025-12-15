@@ -89,11 +89,11 @@ fn test_protocol_error_display() {
     assert!(err_str.contains("超时"));
 }
 
-#[test]
-fn test_protocol_registry() {
+#[tokio::test]
+async fn test_protocol_registry() {
     let registry = ProtocolRegistry::new();
 
-    // 测试空注册表
-    assert!(registry.get(&ProtocolType::QMP).is_none());
-    assert!(registry.get(&ProtocolType::QGA).is_none());
+    // 测试空注册表 - get 返回 Result，所以应该检查 is_err
+    assert!(registry.get("QMP").await.is_err());
+    assert!(registry.get("QGA").await.is_err());
 }
