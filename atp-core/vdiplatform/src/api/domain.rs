@@ -599,11 +599,34 @@ impl<'a> DomainApi<'a> {
     /// 获取虚拟机磁盘列表
     pub async fn get_disks(&self, domain_id: &str) -> Result<Vec<serde_json::Value>> {
         info!("获取虚拟机磁盘列表: {}", domain_id);
-        self.client.request(
+        // API 可能返回对象或数组，需要处理两种情况
+        let response: serde_json::Value = self.client.request(
             Method::GET,
             &format!("/ocloud/v1/domain/{}/disk", domain_id),
             None::<()>,
-        ).await
+        ).await?;
+
+        // 如果返回的是数组，直接使用
+        if let Some(arr) = response.as_array() {
+            return Ok(arr.clone());
+        }
+
+        // 如果返回的是对象，尝试提取常见的数据字段
+        if let Some(obj) = response.as_object() {
+            // 尝试常见的数据字段名
+            for key in &["data", "disks", "items", "list", "records"] {
+                if let Some(arr) = obj.get(*key).and_then(|v| v.as_array()) {
+                    return Ok(arr.clone());
+                }
+            }
+            // 如果对象本身就是单个磁盘信息，包装成数组返回
+            if obj.contains_key("id") || obj.contains_key("filename") {
+                return Ok(vec![response]);
+            }
+        }
+
+        // 返回空数组
+        Ok(vec![])
     }
 
     /// 添加磁盘

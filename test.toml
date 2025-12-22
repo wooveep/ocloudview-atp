@@ -101,7 +101,7 @@ timeout = 30
 [vdi]
 # VDI 平台 API 地址
 # 环境变量: ATP_VDI_BASE_URL
-base_url = "http://192.168.200.250"
+base_url = "http://10.12.10.29"
 
 # VDI 平台用户名
 # 环境变量: ATP_VDI_USERNAME
@@ -109,7 +109,7 @@ username = "admin"
 
 # VDI 平台密码
 # 环境变量: ATP_VDI_PASSWORD
-password = "11111111"
+password = "Jstt@0626.com"
 
 # 是否验证 SSL 证书
 # 环境变量: ATP_VDI_VERIFY_SSL

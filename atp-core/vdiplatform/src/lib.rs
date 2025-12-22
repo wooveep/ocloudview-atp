@@ -90,4 +90,7 @@ pub use models::{
     // 完整创建
     CreateDomainFullRequest, CreateDomainResponse,
     VolumeConfig, IsoConfig,
+
+    // 磁盘和存储
+    DiskInfo, StorageType,
 };

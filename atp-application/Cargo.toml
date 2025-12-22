@@ -18,6 +18,8 @@ license = "MIT OR Apache-2.0"
 atp-transport = { path = "../atp-core/transport" }
 atp-protocol = { path = "../atp-core/protocol" }
 atp-executor = { path = "../atp-core/executor" }
+atp-ssh-executor = { path = "../atp-core/ssh-executor" }
+atp-gluster = { path = "../atp-core/gluster" }
 
 # 异步运行时
 tokio = { version = "1.35", features = ["full"] }

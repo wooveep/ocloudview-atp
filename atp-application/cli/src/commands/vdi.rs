@@ -6,10 +6,13 @@ use crate::commands::common::{
 };
 use anyhow::{Context, Result};
 use atp_executor::TestConfig;
-use atp_vdiplatform::{DomainStatus, HostStatusCode};
+use atp_gluster::GlusterClient;
+use atp_ssh_executor::{SshClient, SshConfig};
+use atp_vdiplatform::{DiskInfo, DomainStatus, HostStatusCode};
 use serde_json::json;
 use std::collections::HashMap;
-use tracing::{error, info};
+use std::path::PathBuf;
+use tracing::{error, info, warn};
 
 /// VDI 虚拟机信息
 #[derive(Debug, Clone)]
@@ -51,6 +54,26 @@ pub async fn handle(action: VdiAction) -> Result<()> {
             config,
             test_connection,
         } => sync_hosts(&config, test_connection).await?,
+        VdiAction::DiskLocation {
+            config,
+            vm,
+            ssh,
+            ssh_user,
+            ssh_password,
+            ssh_key,
+            format,
+        } => {
+            disk_location(
+                &config,
+                &vm,
+                ssh,
+                &ssh_user,
+                ssh_password.as_deref(),
+                ssh_key.as_deref(),
+                &format,
+            )
+            .await?
+        }
     }
     Ok(())
 }
@@ -453,6 +476,417 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
 
     println!("\n💡 提示: 主机信息已从 VDI 平台获取");
     println!("   可以在测试配置中使用这些主机信息");
+
+    Ok(())
+}
+
+/// 查询虚拟机磁盘存储位置
+async fn disk_location(
+    config_path: &str,
+    vm_id_or_name: &str,
+    enable_ssh: bool,
+    ssh_user: &str,
+    ssh_password: Option<&str>,
+    ssh_key: Option<&str>,
+    format: &str,
+) -> Result<()> {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║              虚拟机磁盘存储位置查询                            ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    // 加载配置
+    let config = TestConfig::load_from_path(config_path)
+        .context(format!("无法加载配置文件: {}", config_path))?;
+    let vdi_config = config
+        .vdi
+        .as_ref()
+        .context("配置文件中未找到 VDI 平台配置")?;
+
+    // 1. 登录 VDI 平台
+    println!("📋 步骤 1/3: 登录 VDI 平台...");
+    let client = create_vdi_client(vdi_config).await?;
+    println!("   ✅ VDI 登录成功\n");
+
+    // 2. 查找虚拟机
+    println!("📋 步骤 2/3: 查找虚拟机 {}...", vm_id_or_name);
+    let domains = client.domain().list_all().await?;
+    let domain = domains
+        .iter()
+        .find(|d| {
+            d["id"].as_str() == Some(vm_id_or_name)
+                || d["name"].as_str() == Some(vm_id_or_name)
+        })
+        .context(format!("未找到虚拟机: {}", vm_id_or_name))?;
+
+    let domain_id = domain["id"].as_str().unwrap_or("");
+    let domain_name = domain["name"].as_str().unwrap_or("");
+    println!("   ✅ 找到虚拟机: {} ({})\n", domain_name, domain_id);
+
+    // 3. 获取磁盘信息
+    println!("📋 步骤 3/3: 获取磁盘信息...");
+    let disk_values = client.domain().get_disks(domain_id).await?;
+    let disks: Vec<DiskInfo> = disk_values
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    println!("   ✅ 找到 {} 个磁盘\n", disks.len());
+
+    if disks.is_empty() {
+        println!("⚠️  该虚拟机没有磁盘");
+        return Ok(());
+    }
+
+    // 检查是否有 Gluster 存储的磁盘
+    let has_gluster = disks.iter().any(|d| d.is_gluster());
+
+    // 为每个 Gluster 磁盘查询存储池关联的主机
+    let mut gluster_clients: HashMap<String, Option<GlusterClient>> = HashMap::new();
+
+    if has_gluster && enable_ssh {
+        println!("🔗 查询 Gluster 存储池关联主机...\n");
+
+        // 收集所有 Gluster 磁盘的存储池 ID
+        let gluster_pool_ids: std::collections::HashSet<String> = disks
+            .iter()
+            .filter(|d| d.is_gluster())
+            .map(|d| d.storage_pool_id.clone())
+            .collect();
+
+        for storage_pool_id in &gluster_pool_ids {
+            // 查询存储池详情
+            info!("   查询存储池 {}...", storage_pool_id);
+            let pool_detail = client.storage().get_pool(storage_pool_id).await?;
+
+            // API 返回格式: { "status": 0, "data": { "poolId": "xxx", ... } }
+            // 需要从 data 中获取 poolId
+            let data = &pool_detail["data"];
+
+            // 获取资源池 poolId
+            let resource_pool_id = data["poolId"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+
+            if resource_pool_id.is_empty() {
+                warn!("   存储池 {} 没有关联资源池", storage_pool_id);
+                gluster_clients.insert(storage_pool_id.clone(), None);
+                continue;
+            }
+
+            info!("   存储池 {} 关联资源池: {}", storage_pool_id, resource_pool_id);
+
+            // 根据资源池 ID 查询关联主机
+            let hosts = client.host().list_by_pool_id(&resource_pool_id).await?;
+            let host_ips: Vec<String> = hosts
+                .iter()
+                .filter_map(|h| h["ip"].as_str().map(|s| s.to_string()))
+                .filter(|ip| !ip.is_empty())
+                .collect();
+
+            info!("   找到 {} 个关联主机: {:?}", host_ips.len(), host_ips);
+
+            // 尝试连接主机
+            let mut connected_client = None;
+            for host_ip in &host_ips {
+                info!("   尝试连接 {}...", host_ip);
+
+                let ssh_config = if let Some(password) = ssh_password {
+                    SshConfig::with_password(host_ip, ssh_user, password)
+                } else if let Some(key_path) = ssh_key {
+                    SshConfig::with_key(host_ip, ssh_user, PathBuf::from(key_path))
+                } else {
+                    SshConfig::with_default_key(host_ip, ssh_user)
+                };
+
+                match SshClient::connect(ssh_config).await {
+                    Ok(ssh) => {
+                        println!("   ✅ SSH 连接成功: {} (存储池 {})", host_ip, storage_pool_id);
+                        connected_client = Some(GlusterClient::new(ssh));
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("   ⚠️  {} 连接失败: {}", host_ip, e);
+                    }
+                }
+            }
+
+            if connected_client.is_none() && !host_ips.is_empty() {
+                println!("   ⚠️  存储池 {} 所有主机连接失败", storage_pool_id);
+            }
+
+            gluster_clients.insert(storage_pool_id.clone(), connected_client);
+        }
+
+        println!();
+    } else if has_gluster && !enable_ssh {
+        println!("💡 提示: 使用 --ssh 参数可查询 Gluster 实际 brick 位置\n");
+    }
+
+    // 输出结果
+    match format {
+        "json" => output_disk_location_json_v2(&disks, &gluster_clients, domain_name).await?,
+        _ => output_disk_location_table_v2(&disks, &gluster_clients, domain_name).await?,
+    }
+
+    Ok(())
+}
+
+/// 表格格式输出磁盘位置
+async fn output_disk_location_table(
+    disks: &[DiskInfo],
+    gluster_client: &Option<GlusterClient>,
+    domain_name: &str,
+) -> Result<()> {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║                      磁盘存储位置详情                          ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    println!("虚拟机: {}\n", domain_name);
+
+    for (i, disk) in disks.iter().enumerate() {
+        let boot_label = if disk.is_boot_disk() { " [启动盘]" } else { "" };
+        println!(
+            "📀 磁盘 {} - {}{}\n",
+            i + 1,
+            disk.name,
+            boot_label
+        );
+
+        println!("   文件名:     {}", disk.filename);
+        println!("   逻辑路径:   {}", disk.vol_full_path);
+        println!("   存储池:     {} ({})", disk.pool_name, disk.pool_type);
+        println!("   存储类型:   {}", disk.storage_type_display());
+        println!("   大小:       {} GB", disk.size);
+        println!("   总线类型:   {}", disk.bus_type);
+
+        // 如果是 Gluster 存储，尝试获取实际位置
+        if disk.is_gluster() {
+            if let Some(ref client) = gluster_client {
+                println!("\n   🔍 Gluster 实际存储位置:");
+                match client.get_file_location(&disk.vol_full_path).await {
+                    Ok(location) => {
+                        if let Some(vol_name) = &location.volume_name {
+                            println!("      卷名:    {}", vol_name);
+                        }
+                        println!("      副本数:  {}", location.replica_count());
+                        for (j, replica) in location.replicas.iter().enumerate() {
+                            println!(
+                                "      副本 {}: {}:{}",
+                                j + 1,
+                                replica.host,
+                                replica.file_path
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        println!("      ⚠️  查询失败: {}", e);
+                    }
+                }
+            } else {
+                println!("\n   💡 使用 --ssh-host 查询 Gluster brick 位置");
+            }
+        }
+
+        println!();
+    }
+
+    Ok(())
+}
+
+/// JSON 格式输出磁盘位置
+async fn output_disk_location_json(
+    disks: &[DiskInfo],
+    gluster_client: &Option<GlusterClient>,
+    domain_name: &str,
+) -> Result<()> {
+    let mut disk_results = Vec::new();
+
+    for disk in disks {
+        let mut disk_json = json!({
+            "id": disk.id,
+            "name": disk.name,
+            "filename": disk.filename,
+            "vol_full_path": disk.vol_full_path,
+            "storage_pool_id": disk.storage_pool_id,
+            "storage_pool_name": disk.pool_name,
+            "storage_type": disk.pool_type,
+            "size_gb": disk.size,
+            "bus_type": disk.bus_type,
+            "is_boot_disk": disk.is_boot_disk(),
+            "is_shared": disk.is_shared(),
+        });
+
+        // 如果是 Gluster 存储，尝试获取实际位置
+        if disk.is_gluster() {
+            if let Some(ref client) = gluster_client {
+                match client.get_file_location(&disk.vol_full_path).await {
+                    Ok(location) => {
+                        let replicas: Vec<serde_json::Value> = location
+                            .replicas
+                            .iter()
+                            .map(|r| {
+                                json!({
+                                    "host": r.host,
+                                    "brick_path": r.brick_path,
+                                    "file_path": r.file_path,
+                                })
+                            })
+                            .collect();
+
+                        disk_json["gluster_location"] = json!({
+                            "volume_name": location.volume_name,
+                            "replica_count": location.replica_count(),
+                            "replicas": replicas,
+                        });
+                    }
+                    Err(e) => {
+                        disk_json["gluster_location_error"] = json!(e.to_string());
+                    }
+                }
+            }
+        }
+
+        disk_results.push(disk_json);
+    }
+
+    let output = json!({
+        "domain_name": domain_name,
+        "disk_count": disks.len(),
+        "disks": disk_results,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+
+    Ok(())
+}
+
+/// 表格格式输出磁盘位置 (V2 - 支持多存储池)
+async fn output_disk_location_table_v2(
+    disks: &[DiskInfo],
+    gluster_clients: &HashMap<String, Option<GlusterClient>>,
+    domain_name: &str,
+) -> Result<()> {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║                      磁盘存储位置详情                          ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    println!("虚拟机: {}\n", domain_name);
+
+    for (i, disk) in disks.iter().enumerate() {
+        let boot_label = if disk.is_boot_disk() { " [启动盘]" } else { "" };
+        println!(
+            "📀 磁盘 {} - {}{}\n",
+            i + 1,
+            disk.name,
+            boot_label
+        );
+
+        println!("   文件名:     {}", disk.filename);
+        println!("   逻辑路径:   {}", disk.vol_full_path);
+        println!("   存储池:     {} ({})", disk.pool_name, disk.pool_type);
+        println!("   存储类型:   {}", disk.storage_type_display());
+        println!("   大小:       {} GB", disk.size);
+        println!("   总线类型:   {}", disk.bus_type);
+
+        // 如果是 Gluster 存储，尝试获取实际位置
+        if disk.is_gluster() {
+            if let Some(Some(ref client)) = gluster_clients.get(&disk.storage_pool_id) {
+                println!("\n   🔍 Gluster 实际存储位置:");
+                match client.get_file_location(&disk.vol_full_path).await {
+                    Ok(location) => {
+                        if let Some(vol_name) = &location.volume_name {
+                            println!("      卷名:    {}", vol_name);
+                        }
+                        println!("      副本数:  {}", location.replica_count());
+                        for (j, replica) in location.replicas.iter().enumerate() {
+                            println!(
+                                "      副本 {}: {}:{}",
+                                j + 1,
+                                replica.host,
+                                replica.file_path
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        println!("      ⚠️  查询失败: {}", e);
+                    }
+                }
+            } else if gluster_clients.contains_key(&disk.storage_pool_id) {
+                println!("\n   ⚠️  无法连接存储池关联主机");
+            } else {
+                println!("\n   💡 使用 --ssh 查询 Gluster brick 位置");
+            }
+        }
+
+        println!();
+    }
+
+    Ok(())
+}
+
+/// JSON 格式输出磁盘位置 (V2 - 支持多存储池)
+async fn output_disk_location_json_v2(
+    disks: &[DiskInfo],
+    gluster_clients: &HashMap<String, Option<GlusterClient>>,
+    domain_name: &str,
+) -> Result<()> {
+    let mut disk_results = Vec::new();
+
+    for disk in disks {
+        let mut disk_json = json!({
+            "id": disk.id,
+            "name": disk.name,
+            "filename": disk.filename,
+            "vol_full_path": disk.vol_full_path,
+            "storage_pool_id": disk.storage_pool_id,
+            "storage_pool_name": disk.pool_name,
+            "storage_type": disk.pool_type,
+            "size_gb": disk.size,
+            "bus_type": disk.bus_type,
+            "is_boot_disk": disk.is_boot_disk(),
+            "is_shared": disk.is_shared(),
+        });
+
+        // 如果是 Gluster 存储，尝试获取实际位置
+        if disk.is_gluster() {
+            if let Some(Some(ref client)) = gluster_clients.get(&disk.storage_pool_id) {
+                match client.get_file_location(&disk.vol_full_path).await {
+                    Ok(location) => {
+                        let replicas: Vec<serde_json::Value> = location
+                            .replicas
+                            .iter()
+                            .map(|r| {
+                                json!({
+                                    "host": r.host,
+                                    "brick_path": r.brick_path,
+                                    "file_path": r.file_path,
+                                })
+                            })
+                            .collect();
+
+                        disk_json["gluster_location"] = json!({
+                            "volume_name": location.volume_name,
+                            "replica_count": location.replica_count(),
+                            "replicas": replicas,
+                        });
+                    }
+                    Err(e) => {
+                        disk_json["gluster_location_error"] = json!(e.to_string());
+                    }
+                }
+            }
+        }
+
+        disk_results.push(disk_json);
+    }
+
+    let output = json!({
+        "domain_name": domain_name,
+        "disk_count": disks.len(),
+        "disks": disk_results,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
 
     Ok(())
 }

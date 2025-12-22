@@ -1,0 +1,34 @@
+[package]
+name = "atp-gluster"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ATP Gluster 工具 - 提供 Gluster 存储文件定位能力"
+
+[dependencies]
+# SSH 执行器
+atp-ssh-executor = { path = "../ssh-executor" }
+
+# 异步运行时
+tokio = { workspace = true }
+
+# 错误处理
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# 日志
+tracing = { workspace = true }
+
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 正则表达式
+regex = { workspace = true }
+
+# 时间
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

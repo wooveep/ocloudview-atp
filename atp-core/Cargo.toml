@@ -7,6 +7,8 @@ members = [
     # "orchestrator",  # Deprecated - functionality merged into executor
     "storage",
     "verification-server",
+    "ssh-executor",
+    "gluster",
 ]
 
 resolver = "2"
@@ -49,3 +51,13 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 # WebSocket
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
+
+# SSH 客户端
+russh = "0.46"
+russh-keys = "0.46"
+
+# 正则表达式
+regex = "1.10"
+
+# 目录处理
+dirs = "5.0"

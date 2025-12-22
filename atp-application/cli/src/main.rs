@@ -364,6 +364,37 @@ pub enum VdiAction {
         #[arg(short, long)]
         test_connection: bool,
     },
+
+    /// 查询虚拟机磁盘存储位置（支持 Gluster 分布式存储定位）
+    DiskLocation {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "test.toml")]
+        config: String,
+
+        /// 虚拟机 ID 或名称
+        #[arg(long)]
+        vm: String,
+
+        /// 启用 SSH 连接查询 Gluster 实际 brick 位置（自动从 VDI 获取主机列表）
+        #[arg(long)]
+        ssh: bool,
+
+        /// SSH 用户名
+        #[arg(long, default_value = "root")]
+        ssh_user: String,
+
+        /// SSH 密码（不建议在命令行使用，优先使用密钥认证）
+        #[arg(long)]
+        ssh_password: Option<String>,
+
+        /// SSH 私钥路径
+        #[arg(long)]
+        ssh_key: Option<String>,
+
+        /// 输出格式 (table/json)
+        #[arg(short = 'f', long, default_value = "table")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]

@@ -983,3 +983,160 @@ pub struct CreateDomainResponse {
     /// 虚拟机 UUID
     pub uuid: Option<String>,
 }
+
+// ============================================
+// 磁盘信息相关数据结构
+// ============================================
+
+/// 虚拟机磁盘信息（来自 VDI API /domain/{id}/disk）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskInfo {
+    /// 磁盘 ID（卷 ID）
+    pub id: String,
+
+    /// 磁盘名称（如 win10Template）
+    pub name: String,
+
+    /// 磁盘文件名（如 b97923a3-dd90-4e24-82cf-74c25dca3ff5.qcow2）
+    pub filename: String,
+
+    /// 完整卷路径（如 /home/gluster3/xxx.qcow2）
+    pub vol_full_path: String,
+
+    /// 存储池 ID
+    pub storage_pool_id: String,
+
+    /// 所属虚拟机 ID
+    pub domain_id: String,
+
+    /// 是否为启动磁盘（1=是, 0=否）
+    pub is_start_disk: i32,
+
+    /// 磁盘大小（GB）
+    pub size: u64,
+
+    /// 是否在回收站（0=否, 1=是）
+    #[serde(default)]
+    pub is_recycle: i32,
+
+    /// 总线类型（virtio/scsi/ide）
+    pub bus_type: String,
+
+    /// 存储池路径
+    pub pool_path: String,
+
+    /// 存储池名称
+    pub pool_name: String,
+
+    /// 是否共享（1=是, 0=否）
+    #[serde(default)]
+    pub is_share: i32,
+
+    /// 存储池类型（gluster/nfs/dir/lvm 等）
+    pub pool_type: String,
+
+    /// 创建时间
+    #[serde(default)]
+    pub create_time: Option<String>,
+}
+
+impl DiskInfo {
+    /// 是否为 Gluster 存储
+    pub fn is_gluster(&self) -> bool {
+        self.pool_type.to_lowercase() == "gluster"
+    }
+
+    /// 是否为 NFS 存储
+    pub fn is_nfs(&self) -> bool {
+        self.pool_type.to_lowercase() == "nfs"
+    }
+
+    /// 是否为本地存储
+    pub fn is_local(&self) -> bool {
+        let t = self.pool_type.to_lowercase();
+        t == "dir" || t == "lvm"
+    }
+
+    /// 是否为启动盘
+    pub fn is_boot_disk(&self) -> bool {
+        self.is_start_disk == 1
+    }
+
+    /// 是否为共享存储
+    pub fn is_shared(&self) -> bool {
+        self.is_share == 1
+    }
+
+    /// 获取存储类型显示名称
+    pub fn storage_type_display(&self) -> &'static str {
+        match self.pool_type.to_lowercase().as_str() {
+            "gluster" => "Gluster 分布式存储",
+            "nfs" => "NFS 网络存储",
+            "dir" => "本地文件存储",
+            "lvm" => "LVM 逻辑卷",
+            "share-lvm" => "共享 LVM",
+            "gfs" => "GFS 文件系统",
+            _ => "未知存储类型",
+        }
+    }
+}
+
+/// 存储类型枚举
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageType {
+    /// Gluster 分布式存储
+    Gluster,
+    /// NFS 网络存储
+    Nfs,
+    /// 本地文件存储
+    Dir,
+    /// LVM 逻辑卷
+    Lvm,
+    /// 共享 LVM
+    ShareLvm,
+    /// GFS 文件系统
+    Gfs,
+    /// 未知类型
+    Unknown,
+}
+
+impl StorageType {
+    /// 从字符串解析存储类型
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "gluster" => Self::Gluster,
+            "nfs" => Self::Nfs,
+            "dir" => Self::Dir,
+            "lvm" => Self::Lvm,
+            "share-lvm" | "sharelvm" => Self::ShareLvm,
+            "gfs" => Self::Gfs,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// 是否支持分布式文件定位
+    pub fn supports_file_location(&self) -> bool {
+        matches!(self, Self::Gluster)
+    }
+
+    /// 获取显示名称
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Gluster => "Gluster",
+            Self::Nfs => "NFS",
+            Self::Dir => "本地",
+            Self::Lvm => "LVM",
+            Self::ShareLvm => "共享LVM",
+            Self::Gfs => "GFS",
+            Self::Unknown => "未知",
+        }
+    }
+}
+
+impl std::fmt::Display for StorageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}

@@ -17,6 +17,8 @@ atp-protocol = { workspace = true }
 atp-executor = { workspace = true }
 atp-storage = { path = "../../atp-core/storage" }  # 数据库支持
 atp-vdiplatform = { path = "../../atp-core/vdiplatform" }  # VDI 平台客户端
+atp-ssh-executor = { workspace = true }  # SSH 远程执行
+atp-gluster = { workspace = true }  # Gluster 存储工具
 
 tokio = { workspace = true }
 serde = { workspace = true }
