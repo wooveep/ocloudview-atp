@@ -4,11 +4,14 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "ATP SSH 执行器 - 使用系统 ssh/sshpass 命令执行远程命令"
+description = "ATP SSH 执行器 - 使用 russh 库执行远程命令"
 
 [dependencies]
 # 异步运行时
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "sync", "time"] }
+
+# SSH 库
+russh = "0.55"
 
 # 错误处理
 anyhow = { workspace = true }
