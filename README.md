@@ -113,7 +113,7 @@ connect_timeout = 10
 - 连接到主机的 libvirtd
 - 对比 VDI 和 libvirt 的虚拟机信息
 
-**详细文档**: [CLI VDI 命令使用指南](docs/CLI_VDI_COMMANDS.md) | [VDI_LIBVIRT_INTEGRATION.md](VDI_LIBVIRT_INTEGRATION.md)
+**详细文档**: [CLI VDI 命令使用指南](docs/CLI_VDI_COMMANDS.md) | [VDI_LIBVIRT_INTEGRATION.md](docs/VDI_LIBVIRT_INTEGRATION.md)
 
 ### 前置要求
 - Rust 1.70+
@@ -152,7 +152,7 @@ cargo build --release
 - 主机和虚拟机自动发现
 - VDI + libvirt 数据同步验证
 - 支持多主机管理
-- 详细文档: [VDI_LIBVIRT_INTEGRATION.md](VDI_LIBVIRT_INTEGRATION.md)
+- 详细文档: [VDI_LIBVIRT_INTEGRATION.md](docs/VDI_LIBVIRT_INTEGRATION.md)
 
 ### 分层架构
 - 清晰的职责分离
@@ -179,18 +179,21 @@ cargo build --release
 
 参见 LICENSE 文件
 
+## 版本历史
+
+详见 [CHANGELOG.md](CHANGELOG.md)
+
 ## 文档
 
 详细文档请参见 `docs/` 目录。
 
 ### VDI 平台集成文档
-- [VDI + libvirt 集成报告](VDI_LIBVIRT_INTEGRATION.md) - 完整集成测试报告
-- [VDI 连通性测试总结](VDI_CONNECTIVITY_TEST_SUMMARY.md) - API 测试和连通性验证
+- [VDI + libvirt 集成报告](docs/VDI_LIBVIRT_INTEGRATION.md) - 完整集成测试报告
 - [VDI 登录 API 指南](docs/VDI_LOGIN_API_GUIDE.md) - 认证和 Token 使用
 - [VDI API 发现文档](docs/VDI_API_DISCOVERY.md) - Swagger API 文档
+- [CLI VDI 命令使用指南](docs/CLI_VDI_COMMANDS.md) - VDI 命令行工具
 - [测试配置指南](docs/TESTING_CONFIG_GUIDE.md) - test.toml 配置说明
 
 ### 架构文档
-- [系统架构设计](docs/ARCHITECTURE.md)
-- [协议层设计](docs/PROTOCOL_LAYER.md)
-- [传输层设计](docs/TRANSPORT_LAYER.md)
+- [分层架构设计](docs/LAYERED_ARCHITECTURE.md) - 系统整体分层架构
+- [连接模式设计](docs/CONNECTION_MODES.md) - 连接管理和多主机支持

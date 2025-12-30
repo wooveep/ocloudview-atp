@@ -18,7 +18,7 @@ package-lock.json
 *.swo
 *~
 .DS_Store
-
+.claude/
 # 测试结果
 test-results/
 *.log

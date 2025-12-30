@@ -6,12 +6,12 @@
 
 | 项目属性 | 值 |
 |---------|-----|
-| 当前版本 | v0.4.0 |
-| 整体进度 | 83% |
-| 代码行数 | ~15,200+ 行 |
+| 当前版本 | v0.4.1 |
+| 整体进度 | 87% |
+| 代码行数 | ~15,700+ 行 |
 | 文档数量 | 44 个 |
-| 测试用例 | 66+ 个 |
-| 最后更新 | 2025-12-11 |
+| 测试用例 | 158 个 |
+| 最后更新 | 2025-12-31 |
 
 ---
 
@@ -127,28 +127,6 @@
 
 ---
 
-### 9. 归档文档
-
-<details>
-<summary>点击展开归档文档列表</summary>
-
-以下文档已被新文档替代或不再维护：
-
-| 文档 | 说明 |
-|------|------|
-| [旧架构设计](archive/ARCHITECTURE.md) | 已被分层架构替代 |
-| [架构更新总结](archive/ARCHITECTURE_UPDATE_SUMMARY.md) | 已整合到最新文档 |
-| [重构计划](archive/REFACTORING_PLAN.md) | 重构已完成 |
-| [VDI平台测试更新](archive/VDI_PLATFORM_TESTING_UPDATE.md) | 已合并 |
-| [项目结构总结](archive/PROJECT_STRUCTURE_SUMMARY.md) | 已整合 |
-| [连通性测试README](archive/CONNECTIVITY_TEST_README.md) | 已合并到指南 |
-| [VDI连通性测试总结](archive/VDI_CONNECTIVITY_TEST_SUMMARY.md) | 已归档 |
-| [测试配置README](archive/TEST_CONFIG_README.md) | 已合并到指南 |
-
-</details>
-
----
-
 ## 推荐阅读路径
 
 ### 新手入门 (30分钟)
@@ -215,6 +193,7 @@
 |------|------|
 | [README.md](../README.md) | 项目主文档 |
 | [TODO.md](../TODO.md) | 开发任务清单 |
+| [CHANGELOG.md](../CHANGELOG.md) | 版本历史和变更日志 |
 
 ---
 
@@ -229,8 +208,7 @@
 | 验证器 | 4 | ~2,000 |
 | 项目分析 | 4 | ~3,000 |
 | 部署指南 | 2 | ~500 |
-| 归档 | 8 | ~1,500 |
-| **总计** | **49** | **~23,500** |
+| **总计** | **41** | **~22,000** |
 
 ---
 
@@ -254,6 +232,6 @@
 
 ---
 
-**最后更新**: 2025-12-11
+**最后更新**: 2025-12-31
 **维护者**: OCloudView ATP Team
-**项目版本**: v0.4.0
+**项目版本**: v0.4.1

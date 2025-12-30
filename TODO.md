@@ -10,8 +10,8 @@
 | 测试覆盖率 | 75% | 80%+ |
 | 文档数量 | 44 | - |
 
-**当前版本**: v0.4.1
-**最后更新**: 2025-12-11
+**当前版本**: v0.4.2
+**最后更新**: 2025-12-31
 
 ---
 
@@ -38,55 +38,75 @@
 
 ### 高优先级 (本周)
 
-#### 1. 集成测试运行
+#### 1. 安全问题修复
+- [ ] 修复 SSH Host Key 验证 (实现 known_hosts 检查)
+- [ ] 评估 MD5 密码哈希问题 (依赖服务端支持)
+
+#### 2. 内存泄漏修复
+- [ ] 修复 executor/runner.rs 中的 .leak() 内存泄漏
+- [ ] 实现完整的字符到 QKeyCode 映射表
+
+#### 3. 集成测试运行
 - [x] 配置本地 libvirtd 测试环境
 - [x] 运行 E2E 测试套件验证功能
 - [x] 修复发现的问题 (packed struct 对齐、XML 解析顺序)
 
-#### 2. VDI 平台集成完善
+#### 4. VDI 平台集成完善
 - [x] 完善 DomainApi 批量操作方法
 - [x] 实现虚拟机克隆功能
 - [x] 实现从模板批量创建虚拟机
 - [x] 实现配置修改功能 (CPU/内存)
 - [x] 实现网络管理功能
 
-#### 3. 测试覆盖率提升
+#### 5. 测试覆盖率提升
 - [ ] Transport 模块集成测试
 - [ ] Protocol 协议实现测试
 - [ ] 目标: 覆盖率达到 70%
 
 ### 中优先级 (本月)
 
-#### 4. SPICE 协议细节实现
+#### 6. SPICE 协议细节实现
 - [ ] RSA-OAEP 密码加密
 - [ ] TLS 加密连接
 - [ ] 视频流解码 (VP8/H.264)
 
-#### 5. Executor VDI 操作
+#### 7. Executor VDI 操作
 - [ ] 桌面池管理 (创建、启用、禁用)
 - [ ] 虚拟机管理 (启动、关闭、重启)
 - [ ] 验证条件实现
 
-#### 6. Custom 协议实现
+#### 8. Custom 协议实现
 - [ ] 实现 connect/disconnect 逻辑
 - [ ] 实现 send/receive 方法
 
+#### 9. CLI 代码质量改进
+- [ ] 移除 scenario.rs 中的 unwrap() 调用
+- [ ] 提取 StorageManager 辅助函数
+- [ ] 完成 keyboard/mouse/command 命令实现
+
 ### 低优先级 (后续)
 
-#### 7. HTTP API
+#### 10. HTTP API
 - [ ] Axum 框架搭建
 - [ ] RESTful API 端点
 - [ ] WebSocket 实时推送
 - [ ] Swagger 文档
 
-#### 8. 性能优化
+#### 11. 性能优化
 - [ ] 连接池性能优化
 - [ ] 并发测试 (50+ VMs)
 - [ ] 延迟测试 (< 20ms)
 
-#### 9. Web 控制台
+#### 12. Web 控制台
 - [ ] 前端框架选择
 - [ ] 功能模块实现
+
+#### 13. 文档完善
+- [ ] 架构概览文档
+- [ ] 模块集成指南
+- [ ] 常见场景配置示例
+- [ ] 部署指南
+- [ ] 性能调优指南
 
 ---
 
@@ -303,20 +323,45 @@
 
 | 类别 | 问题 | 优先级 | 位置 |
 |------|------|--------|------|
+| **安全** | SSH Host Key 验证禁用 | **高** | ssh-executor/client.rs:56-62 |
+| **安全** | MD5 密码哈希 (弱加密) | **高** | vdiplatform/client.rs:84 |
+| **内存** | 字符映射使用 .leak() 导致内存泄漏 | **高** | executor/runner.rs:347 |
+| **功能** | 字符到 QKeyCode 映射不完整 | **高** | executor/runner.rs:346-351 |
 | 协议 | QMP Socket 路径从 XML 读取 | 中 | qmp.rs:276 |
 | 协议 | SPICE XML 解析优化 (quick-xml) | 低 | discovery.rs |
 | 协议 | Custom 协议待实现 | 中 | custom.rs |
+| VDI | URL 输入验证缺失 | 中 | vdiplatform/client.rs:59-73 |
 | VDI | 生命周期警告处理 | 低 | vdiplatform |
+| 执行器 | 清理时静默忽略错误 | 中 | executor/runner.rs:211-221 |
 | 执行器 | 未使用的协议缓存字段 | 低 | runner.rs |
+| CLI | 多处 unwrap() 可能导致 panic | 中 | scenario.rs:32,64,110,236 |
+| CLI | StorageManager 创建模式重复 | 低 | report.rs:32-33,107-108 |
+| CLI | PowerShell 路径硬编码 | 低 | powershell.rs:401 |
 | 日志 | 统一日志格式 | 低 | 全局 |
 
 ---
 
 ## 已知问题
 
+### 安全问题 (高优先级)
+1. **SSH Host Key 验证禁用**: 自动接受所有 host key，存在 MITM 攻击风险
+   - 位置: `ssh-executor/src/client.rs:56-62`
+   - 修复建议: 实现 known_hosts 文件检查
+
+2. **MD5 弱密码哈希**: VDI 平台使用 MD5 进行密码哈希
+   - 位置: `vdiplatform/src/client.rs:84`
+   - 修复建议: 使用 bcrypt 或 PBKDF2 (需服务端支持)
+
+### 内存问题
+1. **字符映射内存泄漏**: 使用 `.leak()` 导致长时间运行时内存累积
+   - 位置: `executor/src/runner.rs:347`
+   - 修复建议: 使用静态字符串引用或 owned Vec<String>
+
 ### 协议层
 1. **QMP Socket 路径**: 当前使用简化路径构建，应从 libvirt XML 读取
 2. **QMP/QGA receive()**: 请求-响应模式下独立 receive() 返回错误
+3. **字符到 QKeyCode 映射不完整**: 仅支持基本 ASCII，特殊字符返回 "unknown"
+   - 位置: `executor/src/runner.rs:346-351`
 
 ### SPICE 协议
 1. ~~**对齐错误**: 部分测试存在结构体对齐问题~~ (已修复)
@@ -325,6 +370,19 @@
 
 ### VDI 平台
 1. **警告**: VdiClient 有未使用的字段警告
+2. **URL 验证**: 未验证 base_url 格式
+
+### CLI
+1. **多处 unwrap() 调用**: scenario.rs 中多处 unwrap() 可能导致 panic
+   - 位置: `scenario.rs:32, 64, 110, 236`
+2. **StorageManager 重复创建**: report.rs 中重复创建 StorageManager
+3. **PowerShell 路径硬编码**: 硬编码 Windows PowerShell 路径
+4. **未完成的命令**: keyboard, mouse, command 模块仅为占位实现
+
+### 执行器
+1. **清理时静默忽略错误**: disconnect 错误被静默忽略
+   - 位置: `executor/src/runner.rs:211-221`
+2. **Custom 动作未实现**: Action::Custom 仅记录警告并跳过
 
 ---
 
@@ -363,16 +421,17 @@
 
 ### TODO/FIXME 统计
 
-| 模块 | TODO | FIXME |
-|------|------|-------|
-| protocol (SPICE) | 29 | 0 |
-| executor | 4 | 0 |
-| cli | 5 | 0 |
-| custom protocol | 4 | 0 |
-| storage | 2 | 0 |
-| vdiplatform | 1 | 0 |
-| transport | 1 | 0 |
-| **总计** | **46** | **0** |
+| 模块 | TODO | FIXME | 说明 |
+|------|------|-------|------|
+| protocol (SPICE) | 29 | 0 | SPICE 功能待完善 |
+| executor | 4 | 0 | Custom 动作待实现 |
+| cli | 5 | 0 | 命令实现待完成 |
+| custom protocol | 4 | 0 | 协议待实现 |
+| storage | 2 | 0 | Repository 访问器待添加 |
+| vdiplatform | 1 | 0 | URL 验证 |
+| transport | 1 | 0 | - |
+| ssh-executor | 1 | 0 | Host key 验证 |
+| **总计** | **47** | **0** |
 
 ---
 
@@ -414,6 +473,40 @@
 ---
 
 ## 更新日志
+
+### 2025-12-31 (v0.4.2)
+- **代码审查: atp-application/cli/src**
+  - 发现 5 个未完成命令实现 (keyboard, mouse, command)
+  - 识别 unwrap() 调用风险 (scenario.rs:32,64,110,236)
+  - 识别 StorageManager 重复创建模式
+  - 识别 PowerShell 路径硬编码问题
+  - 评估: 代码质量 8/10
+
+- **代码审查: atp-core**
+  - **安全问题**: SSH Host Key 验证禁用 (MITM 风险)
+  - **安全问题**: MD5 密码哈希 (弱加密)
+  - **内存问题**: executor/runner.rs 中 .leak() 导致内存泄漏
+  - **功能问题**: 字符到 QKeyCode 映射不完整
+  - 识别清理时静默忽略错误
+  - 识别 Custom 动作未实现
+  - 识别 Storage Repository 访问器待添加
+  - 评估: 整体质量 7.4/10
+
+- **更新任务优先级**
+  - 新增安全问题修复为高优先级
+  - 新增内存泄漏修复为高优先级
+  - 新增 CLI 代码质量改进为中优先级
+  - 新增文档完善为低优先级
+
+### 2025-12-31 (v0.4.1)
+- **项目文档全面审查和更新**
+  - 修复 README.md 中指向 docs 目录的文件引用路径
+  - 移除对不存在文件的引用 (VDI_CONNECTIVITY_TEST_SUMMARY.md)
+  - 更新 docs/README.md 的版本号和统计数据
+  - 整理文档结构，确保所有链接正确
+- **文档版本同步**
+  - 统一所有文档版本号为 v0.4.1
+  - 更新最后修改日期为 2025-12-31
 
 ### 2025-12-11 (v0.4.1)
 - **运行集成测试**
@@ -485,6 +578,7 @@
 - **架构设计**: [docs/LAYERED_ARCHITECTURE.md](docs/LAYERED_ARCHITECTURE.md)
 - **快速开始**: [docs/QUICKSTART.md](docs/QUICKSTART.md)
 - **测试配置**: [docs/TESTING_CONFIG_GUIDE.md](docs/TESTING_CONFIG_GUIDE.md)
+- **版本历史**: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
