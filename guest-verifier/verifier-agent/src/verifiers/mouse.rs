@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use verifier_core::{Event, Result, Verifier, VerifierError, VerifierType, VerifyResult};
 
 /// 鼠标验证器 trait
@@ -243,13 +243,13 @@ pub use linux::LinuxMouseVerifier;
 // ===== Windows 实现 (Hook API) =====
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod windows_impl {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::*;
+    use ::windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::*;
 
     /// 鼠标事件类型
     #[derive(Debug, Clone, PartialEq)]
@@ -262,6 +262,7 @@ mod windows {
 
     /// 鼠标事件
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct MouseEvent {
         event_type: MouseEventType,
         position: Option<(i32, i32)>,
@@ -508,7 +509,7 @@ mod windows {
 }
 
 #[cfg(target_os = "windows")]
-pub use windows::WindowsMouseVerifier;
+pub use windows_impl::WindowsMouseVerifier;
 
 // ===== 其他平台 =====
 

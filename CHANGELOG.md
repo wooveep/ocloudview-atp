@@ -5,6 +5,32 @@ All notable changes to the OCloudView ATP project will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2025-12-31
+
+### Added
+- **Guest Verifier Windows 平台完整支持**
+  - 修复 Windows 编译错误，解决 `windows` crate 模块名称冲突
+  - 使用十六进制常量替代 `VK_XXX.0` 表达式解决 Rust match 模式限制
+  - 添加 `Win32_System_LibraryLoader` feature 支持 Hook API
+  - 增强 Windows VM ID 自动检测：
+    - WMI BIOS SerialNumber 获取
+    - WMI CSProduct UUID 获取
+    - PowerShell Get-WmiObject 备选方案
+    - 主机名回退方案
+  - 新增 `--test-input` 测试模式：仅监听并显示输入事件，不连接服务器
+  - 新增 `--test-duration` 参数：设置测试模式持续时间
+
+### Fixed
+- 修复 `keyboard.rs` 中 `mod windows` 与 `windows` crate 名称冲突
+- 修复 `mouse.rs` 中相同的模块名称冲突问题
+- 修复虚拟键码 match 语句使用表达式作为模式的编译错误
+- 移除未使用的 `error` 导入警告
+
+### Changed
+- 重命名 `mod windows` 为 `mod windows_impl` 避免与 crate 名称冲突
+- 使用 `::windows::` 绝对路径引用 windows crate
+- 键盘验证器使用直接十六进制值而非 `VIRTUAL_KEY` 结构体字段
+
 ## [0.4.1] - 2025-12-31
 
 ### Documentation

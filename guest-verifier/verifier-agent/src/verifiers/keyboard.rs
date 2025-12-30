@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use verifier_core::{Event, Result, Verifier, VerifierError, VerifierType, VerifyResult};
 
 /// 键盘验证器 trait
@@ -208,14 +208,13 @@ pub use linux::LinuxKeyboardVerifier;
 // ===== Windows 实现 (Hook API) =====
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod windows_impl {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::UI::Input::KeyboardAndMouse::*;
-    use windows::Win32::UI::WindowsAndMessaging::*;
+    use ::windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::*;
 
     /// 键盘事件
     #[derive(Debug, Clone)]
@@ -321,75 +320,83 @@ mod windows {
 
         /// 虚拟键码转换为按键名称
         fn vk_code_to_key_name(vk_code: u32) -> Option<String> {
-            match vk_code as u16 {
-                // 字母键 A-Z
-                0x41..=0x5A => Some(format!("{}", (vk_code as u8) as char)),
-                // 数字键 0-9
-                0x30..=0x39 => Some(format!("{}", (vk_code - 0x30))),
+            let vk = vk_code as u16;
+
+            // 字母键 A-Z (0x41-0x5A)
+            if vk >= 0x41 && vk <= 0x5A {
+                return Some(format!("{}", (vk_code as u8) as char));
+            }
+
+            // 数字键 0-9 (0x30-0x39)
+            if vk >= 0x30 && vk <= 0x39 {
+                return Some(format!("{}", vk_code - 0x30));
+            }
+
+            // F1-F12 (0x70-0x7B)
+            if vk >= 0x70 && vk <= 0x7B {
+                return Some(format!("F{}", vk - 0x70 + 1));
+            }
+
+            // 数字键盘 0-9 (0x60-0x69)
+            if vk >= 0x60 && vk <= 0x69 {
+                return Some(format!("NUMPAD{}", vk - 0x60));
+            }
+
+            // 其他功能键使用显式匹配
+            match vk {
                 // 功能键
-                VK_RETURN.0 => Some("ENTER".to_string()),
-                VK_SPACE.0 => Some("SPACE".to_string()),
-                VK_ESCAPE.0 => Some("ESC".to_string()),
-                VK_TAB.0 => Some("TAB".to_string()),
-                VK_BACK.0 => Some("BACKSPACE".to_string()),
-                VK_DELETE.0 => Some("DELETE".to_string()),
-                VK_INSERT.0 => Some("INSERT".to_string()),
-                VK_HOME.0 => Some("HOME".to_string()),
-                VK_END.0 => Some("END".to_string()),
-                VK_PRIOR.0 => Some("PAGEUP".to_string()),
-                VK_NEXT.0 => Some("PAGEDOWN".to_string()),
+                0x0D => Some("ENTER".to_string()),     // VK_RETURN
+                0x20 => Some("SPACE".to_string()),     // VK_SPACE
+                0x1B => Some("ESC".to_string()),       // VK_ESCAPE
+                0x09 => Some("TAB".to_string()),       // VK_TAB
+                0x08 => Some("BACKSPACE".to_string()), // VK_BACK
+                0x2E => Some("DELETE".to_string()),    // VK_DELETE
+                0x2D => Some("INSERT".to_string()),    // VK_INSERT
+                0x24 => Some("HOME".to_string()),      // VK_HOME
+                0x23 => Some("END".to_string()),       // VK_END
+                0x21 => Some("PAGEUP".to_string()),    // VK_PRIOR
+                0x22 => Some("PAGEDOWN".to_string()),  // VK_NEXT
                 // 方向键
-                VK_LEFT.0 => Some("LEFT".to_string()),
-                VK_RIGHT.0 => Some("RIGHT".to_string()),
-                VK_UP.0 => Some("UP".to_string()),
-                VK_DOWN.0 => Some("DOWN".to_string()),
-                // F1-F12
-                VK_F1.0 => Some("F1".to_string()),
-                VK_F2.0 => Some("F2".to_string()),
-                VK_F3.0 => Some("F3".to_string()),
-                VK_F4.0 => Some("F4".to_string()),
-                VK_F5.0 => Some("F5".to_string()),
-                VK_F6.0 => Some("F6".to_string()),
-                VK_F7.0 => Some("F7".to_string()),
-                VK_F8.0 => Some("F8".to_string()),
-                VK_F9.0 => Some("F9".to_string()),
-                VK_F10.0 => Some("F10".to_string()),
-                VK_F11.0 => Some("F11".to_string()),
-                VK_F12.0 => Some("F12".to_string()),
+                0x25 => Some("LEFT".to_string()),      // VK_LEFT
+                0x27 => Some("RIGHT".to_string()),     // VK_RIGHT
+                0x26 => Some("UP".to_string()),        // VK_UP
+                0x28 => Some("DOWN".to_string()),      // VK_DOWN
                 // 修饰键
-                VK_SHIFT.0 => Some("SHIFT".to_string()),
-                VK_CONTROL.0 => Some("CTRL".to_string()),
-                VK_MENU.0 => Some("ALT".to_string()),
-                VK_LWIN.0 => Some("LWIN".to_string()),
-                VK_RWIN.0 => Some("RWIN".to_string()),
-                // 数字键盘
-                VK_NUMPAD0.0 => Some("NUMPAD0".to_string()),
-                VK_NUMPAD1.0 => Some("NUMPAD1".to_string()),
-                VK_NUMPAD2.0 => Some("NUMPAD2".to_string()),
-                VK_NUMPAD3.0 => Some("NUMPAD3".to_string()),
-                VK_NUMPAD4.0 => Some("NUMPAD4".to_string()),
-                VK_NUMPAD5.0 => Some("NUMPAD5".to_string()),
-                VK_NUMPAD6.0 => Some("NUMPAD6".to_string()),
-                VK_NUMPAD7.0 => Some("NUMPAD7".to_string()),
-                VK_NUMPAD8.0 => Some("NUMPAD8".to_string()),
-                VK_NUMPAD9.0 => Some("NUMPAD9".to_string()),
-                VK_MULTIPLY.0 => Some("MULTIPLY".to_string()),
-                VK_ADD.0 => Some("ADD".to_string()),
-                VK_SUBTRACT.0 => Some("SUBTRACT".to_string()),
-                VK_DECIMAL.0 => Some("DECIMAL".to_string()),
-                VK_DIVIDE.0 => Some("DIVIDE".to_string()),
+                0x10 => Some("SHIFT".to_string()),     // VK_SHIFT
+                0x11 => Some("CTRL".to_string()),      // VK_CONTROL
+                0x12 => Some("ALT".to_string()),       // VK_MENU
+                0x5B => Some("LWIN".to_string()),      // VK_LWIN
+                0x5C => Some("RWIN".to_string()),      // VK_RWIN
+                0xA0 => Some("LSHIFT".to_string()),    // VK_LSHIFT
+                0xA1 => Some("RSHIFT".to_string()),    // VK_RSHIFT
+                0xA2 => Some("LCTRL".to_string()),     // VK_LCONTROL
+                0xA3 => Some("RCTRL".to_string()),     // VK_RCONTROL
+                0xA4 => Some("LALT".to_string()),      // VK_LMENU
+                0xA5 => Some("RALT".to_string()),      // VK_RMENU
+                // 数字键盘操作符
+                0x6A => Some("MULTIPLY".to_string()),  // VK_MULTIPLY
+                0x6B => Some("ADD".to_string()),       // VK_ADD
+                0x6D => Some("SUBTRACT".to_string()),  // VK_SUBTRACT
+                0x6E => Some("DECIMAL".to_string()),   // VK_DECIMAL
+                0x6F => Some("DIVIDE".to_string()),    // VK_DIVIDE
+                0x90 => Some("NUMLOCK".to_string()),   // VK_NUMLOCK
+                // 其他按键
+                0x14 => Some("CAPSLOCK".to_string()),  // VK_CAPITAL
+                0x91 => Some("SCROLLLOCK".to_string()), // VK_SCROLL
+                0x2C => Some("PRINTSCREEN".to_string()), // VK_SNAPSHOT
+                0x13 => Some("PAUSE".to_string()),     // VK_PAUSE
                 // OEM 键
-                VK_OEM_1.0 => Some(";".to_string()),
-                VK_OEM_PLUS.0 => Some("=".to_string()),
-                VK_OEM_COMMA.0 => Some(",".to_string()),
-                VK_OEM_MINUS.0 => Some("-".to_string()),
-                VK_OEM_PERIOD.0 => Some(".".to_string()),
-                VK_OEM_2.0 => Some("/".to_string()),
-                VK_OEM_3.0 => Some("`".to_string()),
-                VK_OEM_4.0 => Some("[".to_string()),
-                VK_OEM_5.0 => Some("\\".to_string()),
-                VK_OEM_6.0 => Some("]".to_string()),
-                VK_OEM_7.0 => Some("'".to_string()),
+                0xBA => Some(";".to_string()),         // VK_OEM_1
+                0xBB => Some("=".to_string()),         // VK_OEM_PLUS
+                0xBC => Some(",".to_string()),         // VK_OEM_COMMA
+                0xBD => Some("-".to_string()),         // VK_OEM_MINUS
+                0xBE => Some(".".to_string()),         // VK_OEM_PERIOD
+                0xBF => Some("/".to_string()),         // VK_OEM_2
+                0xC0 => Some("`".to_string()),         // VK_OEM_3
+                0xDB => Some("[".to_string()),         // VK_OEM_4
+                0xDC => Some("\\".to_string()),        // VK_OEM_5
+                0xDD => Some("]".to_string()),         // VK_OEM_6
+                0xDE => Some("'".to_string()),         // VK_OEM_7
                 _ => None,
             }
         }
@@ -515,7 +522,7 @@ mod windows {
 }
 
 #[cfg(target_os = "windows")]
-pub use windows::WindowsKeyboardVerifier;
+pub use windows_impl::WindowsKeyboardVerifier;
 
 // ===== 其他平台 =====
 

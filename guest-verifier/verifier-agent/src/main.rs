@@ -67,8 +67,66 @@ fn auto_detect_vm_id() -> Result<String> {
 
     #[cfg(target_os = "windows")]
     {
-        // Windows: 使用计算机名
         use std::process::Command;
+
+        // 方式 1: 尝试通过 WMI 获取 BIOS 序列号（虚拟机中通常由 hypervisor 设置）
+        if let Ok(output) = Command::new("wmic")
+            .args(["bios", "get", "serialnumber"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // 解析 WMIC 输出（第一行是标题，第二行是值）
+            let lines: Vec<&str> = stdout.lines().collect();
+            if lines.len() >= 2 {
+                let serial = lines[1].trim().to_string();
+                if !serial.is_empty()
+                    && serial != "None"
+                    && serial != "Not Specified"
+                    && !serial.contains("To Be Filled")
+                {
+                    debug!("从 WMI BIOS SerialNumber 获取 VM ID: {}", serial);
+                    return Ok(serial);
+                }
+            }
+        }
+
+        // 方式 2: 尝试通过 WMI 获取系统 UUID
+        if let Ok(output) = Command::new("wmic")
+            .args(["csproduct", "get", "uuid"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = stdout.lines().collect();
+            if lines.len() >= 2 {
+                let uuid = lines[1].trim().to_string();
+                if !uuid.is_empty()
+                    && uuid != "None"
+                    && !uuid.starts_with("FFFFFFFF")
+                {
+                    debug!("从 WMI CSProduct UUID 获取 VM ID: {}", uuid);
+                    return Ok(uuid);
+                }
+            }
+        }
+
+        // 方式 3: 尝试通过 PowerShell 获取系统信息（兼容 Win10 及以上）
+        if let Ok(output) = Command::new("powershell")
+            .args(["-Command", "(Get-WmiObject -Class Win32_ComputerSystemProduct).UUID"])
+            .output()
+        {
+            let uuid = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_string();
+            if !uuid.is_empty()
+                && uuid != "None"
+                && !uuid.starts_with("FFFFFFFF")
+            {
+                debug!("从 PowerShell 获取系统 UUID 作为 VM ID: {}", uuid);
+                return Ok(uuid);
+            }
+        }
+
+        // 方式 4: 回退到使用计算机名
         if let Ok(output) = Command::new("hostname").output() {
             let hostname = String::from_utf8_lossy(&output.stdout)
                 .trim()
@@ -126,6 +184,14 @@ struct Args {
     /// 重连间隔（秒）
     #[arg(long, default_value = "5")]
     reconnect_interval: u64,
+
+    /// 测试模式：仅监听并显示输入事件，不连接服务器
+    #[arg(long)]
+    test_input: bool,
+
+    /// 测试模式持续时间（秒），默认 30 秒
+    #[arg(long, default_value = "30")]
+    test_duration: u64,
 }
 
 /// 验证器类型参数
@@ -384,6 +450,11 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // 测试模式：仅监听输入事件
+    if args.test_input {
+        return run_input_test_mode(&args).await;
+    }
+
     info!("启动 Guest 验证器 Agent");
     info!("服务器地址: {}", args.server);
     info!("传输类型: {:?}", args.transport);
@@ -399,6 +470,347 @@ async fn main() -> Result<()> {
 
     // 运行事件循环
     state.run().await.context("事件循环异常退出")?;
+
+    Ok(())
+}
+
+/// 运行输入测试模式
+async fn run_input_test_mode(args: &Args) -> Result<()> {
+    println!("========================================");
+    println!("  输入测试模式 (Input Test Mode)");
+    println!("========================================");
+    println!();
+    println!("此模式将监听键盘和鼠标输入事件，并在终端显示检测结果。");
+    println!("测试持续时间: {} 秒", args.test_duration);
+    println!();
+    println!("按 Ctrl+C 可提前退出测试。");
+    println!();
+    println!("----------------------------------------");
+    println!("正在初始化验证器...");
+    println!();
+
+    // 确定启用的验证器类型
+    let enabled_types = if args.verifiers.is_empty() || args.verifiers.contains(&VerifierTypeArg::All) {
+        vec![VerifierTypeArg::Keyboard, VerifierTypeArg::Mouse]
+    } else {
+        args.verifiers.iter()
+            .filter(|v| **v == VerifierTypeArg::Keyboard || **v == VerifierTypeArg::Mouse)
+            .cloned()
+            .collect()
+    };
+
+    if enabled_types.is_empty() {
+        println!("错误：测试模式需要启用 keyboard 或 mouse 验证器");
+        return Ok(());
+    }
+
+    // Windows 平台的测试实现
+    #[cfg(target_os = "windows")]
+    {
+        run_windows_input_test(&enabled_types, args.test_duration).await?;
+    }
+
+    // Linux 平台的测试实现
+    #[cfg(target_os = "linux")]
+    {
+        run_linux_input_test(&enabled_types, args.test_duration).await?;
+    }
+
+    println!();
+    println!("----------------------------------------");
+    println!("测试完成！");
+    println!("========================================");
+
+    Ok(())
+}
+
+/// Windows 平台输入测试
+#[cfg(target_os = "windows")]
+async fn run_windows_input_test(enabled_types: &[VerifierTypeArg], duration_secs: u64) -> Result<()> {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use ::windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::*;
+
+    // 事件记录
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    enum InputEvent {
+        Keyboard { key: String, timestamp: Instant },
+        MouseClick { button: String, x: i32, y: i32, timestamp: Instant },
+        MouseMove { x: i32, y: i32, timestamp: Instant },
+    }
+
+    lazy_static::lazy_static! {
+        static ref TEST_EVENTS: Arc<Mutex<VecDeque<InputEvent>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+    }
+
+    // 虚拟键码转换
+    fn vk_to_name(vk: u32) -> Option<String> {
+        let vk = vk as u16;
+        if vk >= 0x41 && vk <= 0x5A {
+            return Some(format!("{}", (vk as u8) as char));
+        }
+        if vk >= 0x30 && vk <= 0x39 {
+            return Some(format!("{}", vk - 0x30));
+        }
+        if vk >= 0x70 && vk <= 0x7B {
+            return Some(format!("F{}", vk - 0x70 + 1));
+        }
+        match vk {
+            0x0D => Some("ENTER".to_string()),
+            0x20 => Some("SPACE".to_string()),
+            0x1B => Some("ESC".to_string()),
+            0x09 => Some("TAB".to_string()),
+            0x08 => Some("BACKSPACE".to_string()),
+            0x25 => Some("LEFT".to_string()),
+            0x27 => Some("RIGHT".to_string()),
+            0x26 => Some("UP".to_string()),
+            0x28 => Some("DOWN".to_string()),
+            0x10 => Some("SHIFT".to_string()),
+            0x11 => Some("CTRL".to_string()),
+            0x12 => Some("ALT".to_string()),
+            _ => Some(format!("VK_{:#04X}", vk)),
+        }
+    }
+
+    // 键盘钩子回调
+    unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 && wparam.0 as u32 == WM_KEYDOWN {
+            let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            if let Some(key_name) = vk_to_name(kb.vkCode) {
+                if let Ok(mut events) = TEST_EVENTS.lock() {
+                    events.push_back(InputEvent::Keyboard {
+                        key: key_name,
+                        timestamp: Instant::now(),
+                    });
+                }
+            }
+        }
+        CallNextHookEx(None, code, wparam, lparam)
+    }
+
+    // 鼠标钩子回调
+    unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 {
+            let mouse = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+            let msg = wparam.0 as u32;
+
+            let event = match msg {
+                WM_LBUTTONDOWN => Some(InputEvent::MouseClick {
+                    button: "左键".to_string(),
+                    x: mouse.pt.x,
+                    y: mouse.pt.y,
+                    timestamp: Instant::now(),
+                }),
+                WM_RBUTTONDOWN => Some(InputEvent::MouseClick {
+                    button: "右键".to_string(),
+                    x: mouse.pt.x,
+                    y: mouse.pt.y,
+                    timestamp: Instant::now(),
+                }),
+                WM_MBUTTONDOWN => Some(InputEvent::MouseClick {
+                    button: "中键".to_string(),
+                    x: mouse.pt.x,
+                    y: mouse.pt.y,
+                    timestamp: Instant::now(),
+                }),
+                _ => None,
+            };
+
+            if let Some(event) = event {
+                if let Ok(mut events) = TEST_EVENTS.lock() {
+                    events.push_back(event);
+                }
+            }
+        }
+        CallNextHookEx(None, code, wparam, lparam)
+    }
+
+    let test_keyboard = enabled_types.contains(&VerifierTypeArg::Keyboard);
+    let test_mouse = enabled_types.contains(&VerifierTypeArg::Mouse);
+
+    println!("启用的测试：");
+    if test_keyboard {
+        println!("  ✓ 键盘输入监听");
+    }
+    if test_mouse {
+        println!("  ✓ 鼠标点击监听");
+    }
+    println!();
+    println!("开始监听输入事件...");
+    println!();
+
+    // 在后台线程启动 Windows Hook
+    let _hook_thread = std::thread::spawn(move || {
+        unsafe {
+            let kb_hook = if test_keyboard {
+                Some(SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0)
+                    .expect("无法安装键盘钩子"))
+            } else {
+                None
+            };
+
+            let mouse_hook = if test_mouse {
+                Some(SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0)
+                    .expect("无法安装鼠标钩子"))
+            } else {
+                None
+            };
+
+            // 消息循环
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
+            // 清理
+            if let Some(hook) = kb_hook {
+                let _ = UnhookWindowsHookEx(hook);
+            }
+            if let Some(hook) = mouse_hook {
+                let _ = UnhookWindowsHookEx(hook);
+            }
+        }
+    });
+
+    // 等待钩子安装
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // 主循环：显示事件
+    let start_time = Instant::now();
+    let duration = std::time::Duration::from_secs(duration_secs);
+    let mut event_count = 0u32;
+
+    while start_time.elapsed() < duration {
+        // 检查并显示新事件
+        if let Ok(mut events) = TEST_EVENTS.lock() {
+            while let Some(event) = events.pop_front() {
+                event_count += 1;
+                match event {
+                    InputEvent::Keyboard { key, .. } => {
+                        println!("[{:>4}] ⌨️  键盘: {}", event_count, key);
+                    }
+                    InputEvent::MouseClick { button, x, y, .. } => {
+                        println!("[{:>4}] 🖱️  鼠标: {} 点击 @ ({}, {})", event_count, button, x, y);
+                    }
+                    InputEvent::MouseMove { x, y, .. } => {
+                        println!("[{:>4}] 🖱️  鼠标: 移动 @ ({}, {})", event_count, x, y);
+                    }
+                }
+            }
+        }
+
+        // 显示剩余时间
+        let remaining = duration.saturating_sub(start_time.elapsed());
+        if remaining.as_secs() % 5 == 0 && remaining.as_millis() % 1000 < 100 {
+            println!("... 剩余 {} 秒 ...", remaining.as_secs());
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    println!();
+    println!("总共检测到 {} 个输入事件", event_count);
+
+    // 注意：hook_thread 会在程序退出时自动终止
+    // 在生产环境中应该优雅地终止线程
+
+    Ok(())
+}
+
+/// Linux 平台输入测试
+#[cfg(target_os = "linux")]
+async fn run_linux_input_test(enabled_types: &[VerifierTypeArg], duration_secs: u64) -> Result<()> {
+    use evdev::{Device, InputEventKind, Key};
+    use std::time::Instant;
+
+    let test_keyboard = enabled_types.contains(&VerifierTypeArg::Keyboard);
+    let test_mouse = enabled_types.contains(&VerifierTypeArg::Mouse);
+
+    println!("启用的测试：");
+    if test_keyboard {
+        println!("  ✓ 键盘输入监听");
+    }
+    if test_mouse {
+        println!("  ✓ 鼠标点击监听");
+    }
+    println!();
+
+    // 查找输入设备
+    let mut devices = Vec::new();
+    for entry in std::fs::read_dir("/dev/input")? {
+        let entry = entry?;
+        let path = entry.path();
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with("event") {
+                if let Ok(device) = Device::open(&path) {
+                    let has_keyboard = device.supported_keys()
+                        .map(|k| k.contains(Key::KEY_A))
+                        .unwrap_or(false);
+                    let has_mouse = device.supported_keys()
+                        .map(|k| k.contains(Key::BTN_LEFT))
+                        .unwrap_or(false);
+
+                    if (test_keyboard && has_keyboard) || (test_mouse && has_mouse) {
+                        println!("找到设备: {} ({})",
+                            device.name().unwrap_or("未知"),
+                            path.display());
+                        devices.push(device);
+                    }
+                }
+            }
+        }
+    }
+
+    if devices.is_empty() {
+        println!("错误：未找到可用的输入设备");
+        println!("提示：可能需要 root 权限或将用户添加到 input 组");
+        return Ok(());
+    }
+
+    println!();
+    println!("开始监听输入事件...");
+    println!();
+
+    let start_time = Instant::now();
+    let duration = std::time::Duration::from_secs(duration_secs);
+    let mut event_count = 0u32;
+
+    while start_time.elapsed() < duration {
+        for device in devices.iter_mut() {
+            if let Ok(events) = device.fetch_events() {
+                for event in events {
+                    match event.kind() {
+                        InputEventKind::Key(key) if event.value() == 1 => {
+                            event_count += 1;
+                            let key_name = format!("{:?}", key);
+                            if key_name.starts_with("KEY_") {
+                                println!("[{:>4}] ⌨️  键盘: {}", event_count,
+                                    key_name.strip_prefix("KEY_").unwrap_or(&key_name));
+                            } else if key_name.starts_with("BTN_") {
+                                println!("[{:>4}] 🖱️  鼠标: {} 点击", event_count,
+                                    match key_name.as_str() {
+                                        "BTN_LEFT" => "左键",
+                                        "BTN_RIGHT" => "右键",
+                                        "BTN_MIDDLE" => "中键",
+                                        _ => &key_name,
+                                    });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    println!();
+    println!("总共检测到 {} 个输入事件", event_count);
 
     Ok(())
 }
