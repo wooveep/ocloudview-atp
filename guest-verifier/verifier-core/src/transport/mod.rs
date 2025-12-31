@@ -7,7 +7,7 @@ pub use websocket::WebSocketTransport;
 pub use tcp::TcpTransport;
 
 use async_trait::async_trait;
-use crate::{Event, Result, VerifyResult};
+use crate::{Event, RawInputEvent, VerifiedInputEvent, Result, VerifyResult};
 
 /// 传输层抽象接口
 #[async_trait]
@@ -21,6 +21,12 @@ pub trait VerifierTransport: Send + Sync {
 
     /// 发送验证结果
     async fn send_result(&mut self, result: &VerifyResult) -> Result<()>;
+
+    /// 发送已验证的输入事件（用于调试）
+    async fn send_input_event(&mut self, event: &VerifiedInputEvent) -> Result<()>;
+
+    /// 发送原始输入事件（输入上报模式）
+    async fn send_raw_input_event(&mut self, event: &RawInputEvent) -> Result<()>;
 
     /// 接收事件
     async fn receive_event(&mut self) -> Result<Event>;

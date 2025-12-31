@@ -1,27 +1,24 @@
 //! Guest 验证器 Agent
 //!
-//! 该 Agent 运行在 Guest OS 内部，接收测试事件并验证实际发生的输入/输出
+//! 该 Agent 运行在 Guest OS 内部，持续监听输入事件并实时上报给服务端
 
 mod verifiers;
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use verifier_core::{
-    Event, TcpTransport, Verifier, VerifierTransport, VerifierType, WebSocketTransport,
-};
+use verifier_core::{TcpTransport, VerifierTransport, WebSocketTransport};
 
 // 根据平台导入不同的验证器
 #[cfg(target_os = "linux")]
-use verifiers::{CommandVerifier, LinuxKeyboardVerifier, LinuxMouseVerifier};
+use verifiers::{LinuxKeyboardVerifier, LinuxMouseVerifier};
 
 #[cfg(target_os = "windows")]
-use verifiers::{CommandVerifier, WindowsKeyboardVerifier, WindowsMouseVerifier};
+use verifiers::{WindowsKeyboardVerifier, WindowsMouseVerifier};
 
 /// 自动获取 VM ID
 ///
@@ -199,16 +196,14 @@ struct Args {
 enum VerifierTypeArg {
     Keyboard,
     Mouse,
-    Command,
     All,
 }
 
 /// Agent 状态
 struct AgentState {
-    verifiers: HashMap<VerifierType, Arc<dyn Verifier>>,
     transport: Arc<RwLock<Box<dyn VerifierTransport>>>,
     args: Args,
-    vm_id: String, // 实际使用的 VM ID（自动检测或手动指定）
+    vm_id: String,
 }
 
 impl AgentState {
@@ -242,95 +237,7 @@ impl AgentState {
 
         let transport = Arc::new(RwLock::new(transport));
 
-        // 创建验证器
-        let mut verifiers: HashMap<VerifierType, Arc<dyn Verifier>> = HashMap::new();
-
-        // 确定启用的验证器类型
-        let enabled_types = if args.verifiers.is_empty() || args.verifiers.contains(&VerifierTypeArg::All) {
-            // 默认启用所有验证器
-            vec![
-                VerifierTypeArg::Keyboard,
-                VerifierTypeArg::Mouse,
-                VerifierTypeArg::Command,
-            ]
-        } else {
-            args.verifiers.clone()
-        };
-
-        // 初始化验证器
-        for verifier_type in enabled_types {
-            match verifier_type {
-                VerifierTypeArg::Keyboard => {
-                    #[cfg(target_os = "linux")]
-                    match LinuxKeyboardVerifier::new() {
-                        Ok(v) => {
-                            info!("启用键盘验证器 (Linux)");
-                            verifiers.insert(VerifierType::Keyboard, Arc::new(v));
-                        }
-                        Err(e) => {
-                            warn!("初始化键盘验证器失败: {}", e);
-                        }
-                    }
-
-                    #[cfg(target_os = "windows")]
-                    match WindowsKeyboardVerifier::new() {
-                        Ok(v) => {
-                            info!("启用键盘验证器 (Windows)");
-                            verifiers.insert(VerifierType::Keyboard, Arc::new(v));
-                        }
-                        Err(e) => {
-                            warn!("初始化键盘验证器失败: {}", e);
-                        }
-                    }
-                }
-                VerifierTypeArg::Mouse => {
-                    #[cfg(target_os = "linux")]
-                    match LinuxMouseVerifier::new() {
-                        Ok(v) => {
-                            info!("启用鼠标验证器 (Linux)");
-                            verifiers.insert(VerifierType::Mouse, Arc::new(v));
-                        }
-                        Err(e) => {
-                            warn!("初始化鼠标验证器失败: {}", e);
-                        }
-                    }
-
-                    #[cfg(target_os = "windows")]
-                    match WindowsMouseVerifier::new() {
-                        Ok(v) => {
-                            info!("启用鼠标验证器 (Windows)");
-                            verifiers.insert(VerifierType::Mouse, Arc::new(v));
-                        }
-                        Err(e) => {
-                            warn!("初始化鼠标验证器失败: {}", e);
-                        }
-                    }
-                }
-                VerifierTypeArg::Command => {
-                    match CommandVerifier::new() {
-                        Ok(v) => {
-                            info!("启用命令验证器");
-                            verifiers.insert(VerifierType::Command, Arc::new(v));
-                        }
-                        Err(e) => {
-                            warn!("初始化命令验证器失败: {}", e);
-                        }
-                    }
-                }
-                VerifierTypeArg::All => {
-                    // 已在上面处理
-                }
-            }
-        }
-
-        if verifiers.is_empty() {
-            return Err(anyhow::anyhow!("没有可用的验证器"));
-        }
-
-        info!("已启用 {} 个验证器", verifiers.len());
-
         Ok(Self {
-            verifiers,
             transport,
             args,
             vm_id,
@@ -348,90 +255,135 @@ impl AgentState {
         Ok(())
     }
 
-    /// 处理事件
-    async fn handle_event(&self, event: Event) -> Result<()> {
-        info!("收到事件: type={}", event.event_type);
+    /// 运行输入上报模式
+    async fn run(&self) -> Result<()> {
+        info!("启动输入上报模式");
 
-        // 根据事件类型选择验证器
-        let verifier = match event.event_type.as_str() {
-            "keyboard" => self.verifiers.get(&VerifierType::Keyboard),
-            "mouse" => self.verifiers.get(&VerifierType::Mouse),
-            "command" => self.verifiers.get(&VerifierType::Command),
-            _ => {
-                warn!("未知事件类型: {}", event.event_type);
-                None
-            }
+        // 确定启用的验证器类型
+        let enabled_types = if self.args.verifiers.is_empty() || self.args.verifiers.contains(&VerifierTypeArg::All) {
+            vec![VerifierTypeArg::Keyboard, VerifierTypeArg::Mouse]
+        } else {
+            self.args.verifiers.clone()
         };
 
-        if let Some(verifier) = verifier {
-            // 执行验证
-            match verifier.verify(event).await {
-                Ok(result) => {
-                    info!(
-                        "验证完成: verified={}, latency={}ms",
-                        result.verified, result.latency_ms
-                    );
-
-                    // 发送验证结果
-                    let mut transport = self.transport.write().await;
-                    transport
-                        .send_result(&result)
-                        .await
-                        .context("发送验证结果失败")?;
+        // 启动键盘监听任务
+        #[cfg(target_os = "linux")]
+        let keyboard_handle = if enabled_types.contains(&VerifierTypeArg::Keyboard) {
+            match LinuxKeyboardVerifier::new() {
+                Ok(verifier) => {
+                    info!("启动键盘输入监听任务");
+                    let transport = self.transport.clone();
+                    Some(tokio::spawn(async move {
+                        if let Err(e) = verifier.start(transport).await {
+                            error!("键盘监听任务异常退出: {}", e);
+                        }
+                    }))
                 }
                 Err(e) => {
-                    error!("验证失败: {}", e);
+                    warn!("初始化键盘验证器失败: {}", e);
+                    None
                 }
             }
         } else {
-            warn!("没有合适的验证器处理事件类型: {}", event.event_type);
+            None
+        };
+
+        #[cfg(target_os = "windows")]
+        let keyboard_handle = if enabled_types.contains(&VerifierTypeArg::Keyboard) {
+            match WindowsKeyboardVerifier::new() {
+                Ok(verifier) => {
+                    info!("启动键盘输入监听任务");
+                    let transport = self.transport.clone();
+                    Some(tokio::spawn(async move {
+                        if let Err(e) = verifier.start(transport).await {
+                            error!("键盘监听任务异常退出: {}", e);
+                        }
+                    }))
+                }
+                Err(e) => {
+                    warn!("初始化键盘验证器失败: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // 启动鼠标监听任务
+        #[cfg(target_os = "linux")]
+        let mouse_handle = if enabled_types.contains(&VerifierTypeArg::Mouse) {
+            match LinuxMouseVerifier::new() {
+                Ok(verifier) => {
+                    info!("启动鼠标输入监听任务");
+                    let transport = self.transport.clone();
+                    Some(tokio::spawn(async move {
+                        if let Err(e) = verifier.start(transport).await {
+                            error!("鼠标监听任务异常退出: {}", e);
+                        }
+                    }))
+                }
+                Err(e) => {
+                    warn!("初始化鼠标验证器失败: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        #[cfg(target_os = "windows")]
+        let mouse_handle = if enabled_types.contains(&VerifierTypeArg::Mouse) {
+            match WindowsMouseVerifier::new() {
+                Ok(verifier) => {
+                    info!("启动鼠标输入监听任务");
+                    let transport = self.transport.clone();
+                    Some(tokio::spawn(async move {
+                        if let Err(e) = verifier.start(transport).await {
+                            error!("鼠标监听任务异常退出: {}", e);
+                        }
+                    }))
+                }
+                Err(e) => {
+                    warn!("初始化鼠标验证器失败: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // 检查是否有任何监听任务启动
+        if keyboard_handle.is_none() && mouse_handle.is_none() {
+            return Err(anyhow::anyhow!("没有可用的输入监听器"));
+        }
+
+        info!("输入上报模式已启动，等待监听任务...");
+
+        // 等待任意任务完成（正常情况下它们会一直运行）
+        tokio::select! {
+            _ = async {
+                if let Some(handle) = keyboard_handle {
+                    let _ = handle.await;
+                } else {
+                    // 如果没有键盘任务，永久等待
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                warn!("键盘监听任务结束");
+            }
+            _ = async {
+                if let Some(handle) = mouse_handle {
+                    let _ = handle.await;
+                } else {
+                    // 如果没有鼠标任务，永久等待
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                warn!("鼠标监听任务结束");
+            }
         }
 
         Ok(())
-    }
-
-    /// 运行事件循环
-    async fn run(&self) -> Result<()> {
-        info!("启动事件循环");
-
-        loop {
-            // 接收事件
-            let event = {
-                let mut transport = self.transport.write().await;
-                match transport.receive_event().await {
-                    Ok(event) => event,
-                    Err(e) => {
-                        error!("接收事件失败: {}", e);
-
-                        // 如果启用了自动重连，尝试重连
-                        if self.args.auto_reconnect {
-                            warn!(
-                                "将在 {} 秒后尝试重连...",
-                                self.args.reconnect_interval
-                            );
-                            tokio::time::sleep(tokio::time::Duration::from_secs(
-                                self.args.reconnect_interval,
-                            ))
-                            .await;
-
-                            // 尝试重连
-                            drop(transport); // 释放锁
-                            if let Err(e) = self.connect().await {
-                                error!("重连失败: {}", e);
-                            }
-                            continue;
-                        } else {
-                            return Err(e.into());
-                        }
-                    }
-                }
-            };
-
-            // 处理事件
-            if let Err(e) = self.handle_event(event).await {
-                error!("处理事件失败: {}", e);
-            }
-        }
     }
 }
 
@@ -455,10 +407,10 @@ async fn main() -> Result<()> {
         return run_input_test_mode(&args).await;
     }
 
-    info!("启动 Guest 验证器 Agent");
+    info!("启动 Guest 验证器 Agent (输入上报模式)");
     info!("服务器地址: {}", args.server);
     info!("传输类型: {:?}", args.transport);
-    info!("启用的验证器: {:?}", args.verifiers);
+    info!("启用的监听器: {:?}", args.verifiers);
 
     // 创建 Agent 状态
     let state = AgentState::new(args)
@@ -468,8 +420,8 @@ async fn main() -> Result<()> {
     // 连接到服务器
     state.connect().await.context("初始连接失败")?;
 
-    // 运行事件循环
-    state.run().await.context("事件循环异常退出")?;
+    // 运行输入上报模式
+    state.run().await.context("输入上报模式异常退出")?;
 
     Ok(())
 }

@@ -1,12 +1,16 @@
 //! 鼠标验证器实现
 
 use async_trait::async_trait;
-use serde_json::json;
+#[allow(unused_imports)]
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info};
-use verifier_core::{Event, Result, Verifier, VerifierError, VerifierType, VerifyResult};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
+#[allow(unused_imports)]
+use verifier_core::{Event, RawInputEvent, Result, Verifier, VerifierError, VerifierTransport, VerifierType, VerifyResult};
 
-/// 鼠标验证器 trait
+/// 鼠标验证器 trait (保留用于兼容)
+#[allow(dead_code)]
 #[async_trait]
 pub trait MouseVerifier: Verifier {
     /// 验证鼠标事件
@@ -111,7 +115,8 @@ mod linux {
             Ok(mice)
         }
 
-        /// 监听鼠标事件（带超时）
+        /// 监听鼠标事件（带超时）(保留用于兼容)
+        #[allow(dead_code)]
         async fn wait_for_mouse_event(
             &self,
             event_type: &str,
@@ -170,7 +175,8 @@ mod linux {
             }
         }
 
-        /// 匹配鼠标按键
+        /// 匹配鼠标按键 (保留用于兼容)
+        #[allow(dead_code)]
         fn match_mouse_button(&self, detected: &str, expected: &str) -> bool {
             match expected.to_lowercase().as_str() {
                 "left" | "left_click" => detected.contains("BTN_LEFT"),
@@ -179,12 +185,114 @@ mod linux {
                 _ => false,
             }
         }
+
+        /// 获取鼠标按键名称
+        fn button_to_name(key: evdev::Key) -> String {
+            let key_name = format!("{:?}", key);
+            // BTN_LEFT -> LEFT, BTN_RIGHT -> RIGHT, etc.
+            key_name.strip_prefix("BTN_").unwrap_or(&key_name).to_string()
+        }
+
+        /// 获取相对轴名称
+        fn axis_to_name(axis: evdev::RelativeAxisType) -> String {
+            format!("{:?}", axis)
+        }
+
+        /// 启动输入事件监听并转发到服务端
+        ///
+        /// 此方法会持续监听鼠标事件，并将每个事件实时发送到服务端。
+        pub async fn start(self, transport: Arc<RwLock<Box<dyn VerifierTransport>>>) -> Result<()> {
+            info!("启动鼠标输入上报模式");
+
+            loop {
+                // 检查所有设备
+                let mut devices = self.devices.lock().await;
+                for device in devices.iter_mut() {
+                    // 尝试读取事件（非阻塞）
+                    match device.fetch_events() {
+                        Ok(events) => {
+                            for event in events {
+                                let timestamp = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as i64;
+
+                                match event.kind() {
+                                    InputEventKind::Key(key) => {
+                                        // 鼠标按键事件
+                                        let button_code = key.code();
+                                        let button_name = Self::button_to_name(key);
+                                        let value = event.value();
+
+                                        debug!("检测到鼠标按键: {} (code: {}, value: {})", button_name, button_code, value);
+
+                                        let raw_event = RawInputEvent {
+                                            message_type: "raw_input_event".to_string(),
+                                            event_type: "mouse".to_string(),
+                                            code: button_code,
+                                            value,
+                                            name: button_name.clone(),
+                                            timestamp,
+                                        };
+
+                                        // 发送到服务端
+                                        let mut transport = transport.write().await;
+                                        if let Err(e) = transport.send_raw_input_event(&raw_event).await {
+                                            warn!("发送鼠标按键事件失败: {}", e);
+                                        } else {
+                                            debug!("已发送鼠标按键事件: {} (value: {})", button_name, value);
+                                        }
+                                    }
+                                    InputEventKind::RelAxis(axis) => {
+                                        // 鼠标移动事件（仅在有实际移动时上报）
+                                        if event.value() != 0 {
+                                            let axis_name = Self::axis_to_name(axis);
+                                            let axis_code = axis.0;
+                                            let value = event.value();
+
+                                            debug!("检测到鼠标移动: {} = {}", axis_name, value);
+
+                                            let raw_event = RawInputEvent {
+                                                message_type: "raw_input_event".to_string(),
+                                                event_type: "mouse".to_string(),
+                                                code: axis_code,
+                                                value,
+                                                name: axis_name.clone(),
+                                                timestamp,
+                                            };
+
+                                            // 发送到服务端
+                                            let mut transport = transport.write().await;
+                                            if let Err(e) = transport.send_raw_input_event(&raw_event).await {
+                                                warn!("发送鼠标移动事件失败: {}", e);
+                                            } else {
+                                                debug!("已发送鼠标移动事件: {} = {}", axis_name, value);
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // 非阻塞模式下无事件时会返回错误，忽略
+                        }
+                    }
+                }
+
+                // 短暂休眠避免 CPU 占用过高
+                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+            }
+        }
     }
 
     #[async_trait]
     impl Verifier for LinuxMouseVerifier {
-        async fn verify(&self, event: Event) -> Result<VerifyResult> {
-            self.verify_mouse(&event).await
+        async fn verify(&self, _event: Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify 方法".to_string(),
+            ))
         }
 
         fn verifier_type(&self) -> VerifierType {
@@ -194,56 +302,11 @@ mod linux {
 
     #[async_trait]
     impl MouseVerifier for LinuxMouseVerifier {
-        async fn verify_mouse(&self, event: &Event) -> Result<VerifyResult> {
-            let start_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            debug!("验证鼠标事件: {:?}", event);
-
-            // 从事件数据中提取鼠标操作类型
-            let action = event
-                .data
-                .get("action")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    VerifierError::VerificationFailed("事件缺少 action 字段".to_string())
-                })?;
-
-            // 获取超时时间（默认 5000ms）
-            let timeout_ms = event
-                .data
-                .get("timeout_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5000);
-
-            // 等待鼠标事件
-            let verified = self.wait_for_mouse_event(action, timeout_ms).await?;
-
-            let end_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            let latency_ms = (end_time - start_time) as u64;
-
-            Ok(VerifyResult {
-                event_id: event
-                    .data
-                    .get("event_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-                verified,
-                timestamp: end_time,
-                latency_ms,
-                details: json!({
-                    "action": action,
-                    "platform": "linux",
-                    "method": "evdev",
-                }),
-            })
+        async fn verify_mouse(&self, _event: &Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify_mouse 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify_mouse 方法".to_string(),
+            ))
         }
     }
 }
@@ -450,12 +513,85 @@ mod windows_impl {
                 ))),
             }
         }
+
+        /// 获取鼠标事件名称
+        fn event_type_to_name(event_type: &MouseEventType) -> String {
+            match event_type {
+                MouseEventType::LeftClick => "LEFT".to_string(),
+                MouseEventType::RightClick => "RIGHT".to_string(),
+                MouseEventType::MiddleClick => "MIDDLE".to_string(),
+                MouseEventType::Move => "MOVE".to_string(),
+            }
+        }
+
+        /// 获取鼠标事件代码
+        fn event_type_to_code(event_type: &MouseEventType) -> u16 {
+            match event_type {
+                MouseEventType::LeftClick => 0x01,  // VK_LBUTTON
+                MouseEventType::RightClick => 0x02, // VK_RBUTTON
+                MouseEventType::MiddleClick => 0x04, // VK_MBUTTON
+                MouseEventType::Move => 0x00,
+            }
+        }
+
+        /// 启动输入事件监听并转发到服务端
+        ///
+        /// 此方法会持续监听鼠标事件，并将每个事件实时发送到服务端。
+        pub async fn start(self, transport: Arc<RwLock<Box<dyn VerifierTransport>>>) -> Result<()> {
+            info!("启动鼠标输入上报模式 (Windows)");
+
+            loop {
+                // 检查事件队列
+                let events_to_send: Vec<MouseEvent> = {
+                    if let Ok(mut queue) = self.event_queue.lock() {
+                        let events: Vec<_> = queue.drain(..).collect();
+                        events
+                    } else {
+                        Vec::new()
+                    }
+                };
+
+                // 发送事件
+                for event in events_to_send {
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+
+                    let name = Self::event_type_to_name(&event.event_type);
+                    let code = Self::event_type_to_code(&event.event_type);
+
+                    let raw_event = RawInputEvent {
+                        message_type: "raw_input_event".to_string(),
+                        event_type: "mouse".to_string(),
+                        code,
+                        value: 1, // 按下事件
+                        name: name.clone(),
+                        timestamp,
+                    };
+
+                    // 发送到服务端
+                    let mut transport = transport.write().await;
+                    if let Err(e) = transport.send_raw_input_event(&raw_event).await {
+                        warn!("发送鼠标事件失败: {}", e);
+                    } else {
+                        debug!("已发送鼠标事件: {}", name);
+                    }
+                }
+
+                // 短暂休眠避免 CPU 占用过高
+                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+            }
+        }
     }
 
     #[async_trait]
     impl Verifier for WindowsMouseVerifier {
-        async fn verify(&self, event: Event) -> Result<VerifyResult> {
-            self.verify_mouse(&event).await
+        async fn verify(&self, _event: Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify 方法".to_string(),
+            ))
         }
 
         fn verifier_type(&self) -> VerifierType {
@@ -465,56 +601,11 @@ mod windows_impl {
 
     #[async_trait]
     impl MouseVerifier for WindowsMouseVerifier {
-        async fn verify_mouse(&self, event: &Event) -> Result<VerifyResult> {
-            let start_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            debug!("验证鼠标事件: {:?}", event);
-
-            // 从事件数据中提取鼠标操作类型
-            let action = event
-                .data
-                .get("action")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    VerifierError::VerificationFailed("事件缺少 action 字段".to_string())
-                })?;
-
-            // 获取超时时间（默认 5000ms）
-            let timeout_ms = event
-                .data
-                .get("timeout_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5000);
-
-            // 等待鼠标事件
-            let verified = self.wait_for_mouse_event(action, timeout_ms).await?;
-
-            let end_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            let latency_ms = (end_time - start_time) as u64;
-
-            Ok(VerifyResult {
-                event_id: event
-                    .data
-                    .get("event_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-                verified,
-                timestamp: end_time,
-                latency_ms,
-                details: json!({
-                    "action": action,
-                    "platform": "windows",
-                    "method": "hook_api",
-                }),
-            })
+        async fn verify_mouse(&self, _event: &Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify_mouse 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify_mouse 方法".to_string(),
+            ))
         }
     }
 }

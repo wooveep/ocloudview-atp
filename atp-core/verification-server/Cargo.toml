@@ -34,6 +34,9 @@ futures-util = { workspace = true }
 # 时间
 chrono = { workspace = true }
 
+# 共享类型
+atp-common = { path = "../../atp-common" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }

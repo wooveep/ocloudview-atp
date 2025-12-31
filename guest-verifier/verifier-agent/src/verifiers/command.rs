@@ -207,6 +207,7 @@ impl Verifier for CommandVerifier {
         let latency_ms = (end_time - start_time) as u64;
 
         Ok(VerifyResult {
+            message_type: "verify_result".to_string(),
             event_id: event
                 .data
                 .get("event_id")

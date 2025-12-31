@@ -1,39 +1,13 @@
 //! 数据类型定义
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// 验证事件
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Event {
-    /// 事件类型 (keyboard, mouse, command)
-    pub event_type: String,
+// 从 atp-common 重新导出共享类型
+pub use atp_common::{Event, RawInputEvent, VerifiedInputEvent, VerifyResult};
 
-    /// 事件数据
-    pub data: serde_json::Value,
-
-    /// 时间戳
-    pub timestamp: i64,
-}
-
-/// 验证结果
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifyResult {
-    /// 事件 ID (用于匹配)
-    pub event_id: String,
-
-    /// 是否验证成功
-    pub verified: bool,
-
-    /// 时间戳
-    pub timestamp: i64,
-
-    /// 延迟 (毫秒)
-    pub latency_ms: u64,
-
-    /// 详细信息
-    pub details: serde_json::Value,
-}
+// 为了向后兼容，保留 InputEvent 别名
+#[deprecated(since = "0.1.0", note = "请使用 VerifiedInputEvent")]
+pub type InputEvent = VerifiedInputEvent;
 
 /// 客户端连接信息
 #[derive(Debug, Clone)]

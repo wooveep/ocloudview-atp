@@ -1,18 +1,21 @@
 //! Verification Server 示例程序
 //!
-//! 启动 WebSocket 和 TCP 服务器，等待 Guest Agent 连接
+//! 新架构（输入上报模式）：
+//! 1. 启动 WebSocket 和 TCP 服务器，等待 Guest Agent 连接
+//! 2. Guest Agent 在 VM 内部捕获输入事件并上报 RawInputEvent
+//! 3. 外部系统通过 SPICE/QMP 注入输入到 VM
+//! 4. 服务端调用 expect_input() 注册期望事件，等待 Agent 上报匹配
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 
 use verification_server::{
     client::ClientManager,
     server::{ServerConfig, VerificationServer},
     service::{ServiceConfig, VerificationService},
-    types::Event,
 };
 
 #[tokio::main]
@@ -22,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(Level::DEBUG)
         .init();
 
-    info!("启动 Verification Server 示例");
+    info!("启动 Verification Server 示例（输入上报模式）");
 
     // 创建客户端管理器
     let client_manager = Arc::new(ClientManager::new());
@@ -47,6 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("WebSocket 服务器地址: 0.0.0.0:8765");
     info!("TCP 服务器地址: 0.0.0.0:8766");
     info!("等待 Guest Agent 连接...");
+    info!("");
+    info!("使用说明：");
+    info!("  1. 在 VM 内启动 verifier-agent 连接到本服务");
+    info!("  2. 通过 SPICE/QMP 向 VM 注入按键（如按下 'A' 键）");
+    info!("  3. Agent 捕获并上报事件，服务端完成验证");
+    info!("");
 
     // 创建服务器
     let server = VerificationServer::new(server_config, client_manager.clone());
@@ -58,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 启动测试任务（模拟发送验证事件）
+    // 启动测试任务（演示输入验证流程）
     let test_service = verification_service.clone();
     let test_handle = tokio::spawn(async move {
         // 等待客户端连接
@@ -71,40 +80,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let clients = test_service.client_manager.get_clients().await;
 
             if clients.is_empty() {
-                info!("当前没有客户端连接");
+                info!("当前没有客户端连接，等待中...");
                 continue;
             }
 
             info!("当前连接的客户端: {}", clients.len());
 
-            // 为每个客户端发送测试事件
+            // 为每个客户端演示期望输入验证
             for client_info in clients {
-                info!("向客户端 {} 发送测试事件", client_info.vm_id);
+                info!(
+                    "为 VM {} 注册期望键盘输入: 'A' 键按下",
+                    client_info.vm_id
+                );
+                info!("请在 5 秒内通过 SPICE/QMP 向 VM 注入 'A' 键...");
 
-                let event = Event {
-                    event_type: "keyboard".to_string(),
-                    data: serde_json::json!({
-                        "key": "a",
-                        "timeout_ms": 5000,
-                    }),
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                };
-
+                // 注册期望输入：等待 'A' 键被按下 (value=1)
+                // 此时应通过外部系统（SPICE/QMP）向 VM 注入按键
                 match test_service
-                    .verify_event(&client_info.vm_id, event, Some(Duration::from_secs(10)))
+                    .expect_input(
+                        &client_info.vm_id,
+                        "keyboard",      // 事件类型
+                        "A",             // 期望按键名称
+                        Some(1),         // value=1 表示按下
+                        Some(Duration::from_secs(5)),
+                    )
                     .await
                 {
                     Ok(result) => {
                         info!(
-                            "验证成功: vm_id={}, verified={}, latency={}ms",
-                            client_info.vm_id, result.verified, result.latency_ms
+                            "✓ 验证成功: vm_id={}, latency={}ms, details={:?}",
+                            client_info.vm_id, result.latency_ms, result.details
                         );
                     }
                     Err(e) => {
-                        eprintln!(
-                            "验证失败: vm_id={}, error={}",
+                        warn!(
+                            "✗ 验证超时或失败: vm_id={}, error={}",
                             client_info.vm_id, e
                         );
+                        info!("提示: 确保在超时前向 VM 注入了对应按键");
                     }
                 }
             }

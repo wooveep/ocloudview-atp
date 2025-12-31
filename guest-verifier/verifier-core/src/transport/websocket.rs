@@ -10,7 +10,7 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, error, info};
 
-use crate::{Event, Result, VerifierError, VerifyResult};
+use crate::{Event, RawInputEvent, VerifiedInputEvent, Result, VerifierError, VerifyResult};
 use super::VerifierTransport;
 
 /// WebSocket 传输实现
@@ -35,6 +35,23 @@ impl WebSocketTransport {
                 "未连接到服务器".to_string(),
             ));
         }
+        Ok(())
+    }
+
+    /// 发送 JSON 消息的通用方法
+    async fn send_json_msg(&mut self, json: String, msg_type: &str) -> Result<()> {
+        debug!("发送{}: {}", msg_type, json);
+
+        if let Some(ws_stream) = &mut self.ws_stream {
+            ws_stream
+                .send(Message::Text(json))
+                .await
+                .map_err(|e| {
+                    error!("发送{}失败: {}", msg_type, e);
+                    VerifierError::ConnectionFailed(format!("发送失败: {}", e))
+                })?;
+        }
+
         Ok(())
     }
 }
@@ -89,24 +106,26 @@ impl VerifierTransport for WebSocketTransport {
 
     async fn send_result(&mut self, result: &VerifyResult) -> Result<()> {
         self.ensure_connected()?;
-
         let json = serde_json::to_string(result).map_err(|e| {
             VerifierError::ConnectionFailed(format!("序列化验证结果失败: {}", e))
         })?;
+        self.send_json_msg(json, "验证结果").await
+    }
 
-        debug!("发送验证结果: {}", json);
+    async fn send_input_event(&mut self, event: &VerifiedInputEvent) -> Result<()> {
+        self.ensure_connected()?;
+        let json = serde_json::to_string(event).map_err(|e| {
+            VerifierError::ConnectionFailed(format!("序列化输入事件失败: {}", e))
+        })?;
+        self.send_json_msg(json, "输入事件").await
+    }
 
-        if let Some(ws_stream) = &mut self.ws_stream {
-            ws_stream
-                .send(Message::Text(json))
-                .await
-                .map_err(|e| {
-                    error!("发送验证结果失败: {}", e);
-                    VerifierError::ConnectionFailed(format!("发送失败: {}", e))
-                })?;
-        }
-
-        Ok(())
+    async fn send_raw_input_event(&mut self, event: &RawInputEvent) -> Result<()> {
+        self.ensure_connected()?;
+        let json = serde_json::to_string(event).map_err(|e| {
+            VerifierError::ConnectionFailed(format!("序列化原始输入事件失败: {}", e))
+        })?;
+        self.send_json_msg(json, "原始输入事件").await
     }
 
     async fn receive_event(&mut self) -> Result<Event> {

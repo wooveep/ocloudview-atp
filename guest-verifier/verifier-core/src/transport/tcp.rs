@@ -5,7 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info};
 
-use crate::{Event, Result, VerifierError, VerifyResult};
+use crate::{Event, RawInputEvent, VerifiedInputEvent, Result, VerifierError, VerifyResult};
 use super::VerifierTransport;
 
 /// TCP 传输实现
@@ -143,12 +143,28 @@ impl VerifierTransport for TcpTransport {
 
     async fn send_result(&mut self, result: &VerifyResult) -> Result<()> {
         self.ensure_connected()?;
-
         let json = serde_json::to_string(result).map_err(|e| {
             VerifierError::ConnectionFailed(format!("序列化验证结果失败: {}", e))
         })?;
-
         debug!("发送验证结果: {}", json);
+        self.send_json(&json).await
+    }
+
+    async fn send_input_event(&mut self, event: &VerifiedInputEvent) -> Result<()> {
+        self.ensure_connected()?;
+        let json = serde_json::to_string(event).map_err(|e| {
+            VerifierError::ConnectionFailed(format!("序列化输入事件失败: {}", e))
+        })?;
+        debug!("发送输入事件: {}", json);
+        self.send_json(&json).await
+    }
+
+    async fn send_raw_input_event(&mut self, event: &RawInputEvent) -> Result<()> {
+        self.ensure_connected()?;
+        let json = serde_json::to_string(event).map_err(|e| {
+            VerifierError::ConnectionFailed(format!("序列化原始输入事件失败: {}", e))
+        })?;
+        debug!("发送原始输入事件: {}", json);
         self.send_json(&json).await
     }
 

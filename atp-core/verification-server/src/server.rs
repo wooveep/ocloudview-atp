@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use crate::client::ClientManager;
-use crate::types::{ClientInfo, Event, VerifyResult};
+use crate::types::{ClientInfo, RawInputEvent, VerifiedInputEvent, VerifyResult};
 use crate::Result;
 
 /// 验证服务器配置
@@ -136,6 +136,8 @@ async fn handle_websocket_client(
 
     let mut event_rx = client_manager.register_client(info).await?;
     let result_tx = client_manager.get_result_sender();
+    let input_event_tx = client_manager.get_input_event_sender();
+    let raw_input_event_tx = client_manager.get_raw_input_event_sender();
 
     info!("WebSocket 客户端已注册: {} ({})", vm_id, peer_addr);
 
@@ -151,20 +153,75 @@ async fn handle_websocket_client(
                 }
             }
 
-            // 从客户端接收结果
+            // 从客户端接收消息（可能是 VerifyResult 或 InputEvent）
             Some(msg) = ws_receiver.next() => {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        match serde_json::from_str::<VerifyResult>(&text) {
-                            Ok(result) => {
-                                debug!("收到验证结果: event_id={}", result.event_id);
-                                if result_tx.send(result).is_err() {
-                                    error!("转发验证结果失败");
+                        // 先解析为 JSON Value 判断消息类型
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                            let message_type = json.get("message_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            
+                            match message_type {
+                                "raw_input_event" => {
+                                    if let Ok(raw_event) = serde_json::from_value::<RawInputEvent>(json) {
+                                        info!(
+                                            "[RawInputEvent] vm={}, type={}, name={}, code={}, value={}",
+                                            vm_id,
+                                            raw_event.event_type,
+                                            raw_event.name,
+                                            raw_event.code,
+                                            raw_event.value
+                                        );
+                                        // 转发到通道供验证服务处理
+                                        if raw_input_event_tx.send((vm_id.clone(), raw_event)).is_err() {
+                                            error!("转发原始输入事件失败");
+                                        }
+                                    }
+                                }
+                                "verified_input_event" | "input_event" => {
+                                    if let Ok(input_event) = serde_json::from_value::<VerifiedInputEvent>(json) {
+                                        info!(
+                                            "[VerifiedInputEvent] vm={}, type={}, key_or_action={}, timestamp={}",
+                                            vm_id,
+                                            input_event.event_type,
+                                            input_event.key_or_action,
+                                            input_event.timestamp
+                                        );
+                                        debug!("[VerifiedInputEvent] details: {:?}", input_event.details);
+
+                                        if input_event_tx.send(input_event).is_err() {
+                                            error!("转发输入事件失败");
+                                        }
+                                    }
+                                }
+                                "verify_result" => {
+                                    if let Ok(result) = serde_json::from_value::<VerifyResult>(json) {
+                                        debug!("收到验证结果: event_id={}", result.event_id);
+                                        if result_tx.send(result).is_err() {
+                                            error!("转发验证结果失败");
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // 向后兼容：尝试按旧方式解析
+                                    if let Ok(input_event) = serde_json::from_str::<VerifiedInputEvent>(&text) {
+                                        info!(
+                                            "[VerifiedInputEvent] vm={}, type={}, key_or_action={}",
+                                            vm_id, input_event.event_type, input_event.key_or_action
+                                        );
+                                        let _ = input_event_tx.send(input_event);
+                                    } else if let Ok(result) = serde_json::from_str::<VerifyResult>(&text) {
+                                        debug!("收到验证结果: event_id={}", result.event_id);
+                                        let _ = result_tx.send(result);
+                                    } else {
+                                        warn!("无法解析客户端消息: {}", text);
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                warn!("解析验证结果失败: {}", e);
-                            }
+                        } else {
+                            warn!("无效的 JSON 消息: {}", text);
                         }
                     }
                     Ok(Message::Close(_)) => {

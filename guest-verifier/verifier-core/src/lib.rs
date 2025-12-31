@@ -6,7 +6,11 @@ pub mod event;
 
 pub use verifier::{Verifier, VerifierType};
 pub use transport::VerifierTransport;
-pub use event::{Event, VerifyResult};
+pub use event::{Event, RawInputEvent, VerifiedInputEvent, VerifyResult};
+
+// 为了向后兼容，保留 InputEvent 别名
+#[allow(deprecated)]
+pub use event::InputEvent;
 
 // 重新导出传输实现
 pub use transport::{WebSocketTransport, TcpTransport};

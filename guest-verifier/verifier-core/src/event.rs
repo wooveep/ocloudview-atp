@@ -1,19 +1,9 @@
 //! 事件和结果定义
 
-use serde::{Deserialize, Serialize};
+// 从 atp-common 重新导出共享类型
+pub use atp_common::{Event, RawInputEvent, VerifiedInputEvent, VerifyResult};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Event {
-    pub event_type: String,
-    pub data: serde_json::Value,
-    pub timestamp: i64,
-}
+// 为了向后兼容，保留 InputEvent 别名
+#[deprecated(since = "0.1.0", note = "请使用 VerifiedInputEvent")]
+pub type InputEvent = VerifiedInputEvent;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifyResult {
-    pub event_id: String,
-    pub verified: bool,
-    pub timestamp: i64,
-    pub latency_ms: u64,
-    pub details: serde_json::Value,
-}

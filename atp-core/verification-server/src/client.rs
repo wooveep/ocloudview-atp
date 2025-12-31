@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
-use crate::types::{ClientInfo, Event, VerifyResult};
+use crate::types::{ClientInfo, Event, RawInputEvent, VerifiedInputEvent, VerifyResult};
 use crate::{Result, VerificationError};
 
 /// 客户端会话
@@ -28,17 +28,31 @@ pub struct ClientManager {
     /// 结果接收通道（所有客户端共享）
     result_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<VerifyResult>>>>,
     result_tx: mpsc::UnboundedSender<VerifyResult>,
+
+    /// 输入事件接收通道（用于调试）
+    input_event_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<VerifiedInputEvent>>>>,
+    input_event_tx: mpsc::UnboundedSender<VerifiedInputEvent>,
+
+    /// 原始输入事件接收通道（用于输入上报模式）
+    raw_input_event_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<(String, RawInputEvent)>>>>,
+    raw_input_event_tx: mpsc::UnboundedSender<(String, RawInputEvent)>,
 }
 
 impl ClientManager {
     /// 创建新的客户端管理器
     pub fn new() -> Self {
         let (result_tx, result_rx) = mpsc::unbounded_channel();
+        let (input_event_tx, input_event_rx) = mpsc::unbounded_channel();
+        let (raw_input_event_tx, raw_input_event_rx) = mpsc::unbounded_channel();
 
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             result_rx: Arc::new(RwLock::new(Some(result_rx))),
             result_tx,
+            input_event_rx: Arc::new(RwLock::new(Some(input_event_rx))),
+            input_event_tx,
+            raw_input_event_rx: Arc::new(RwLock::new(Some(raw_input_event_rx))),
+            raw_input_event_tx,
         }
     }
 
@@ -134,6 +148,28 @@ impl ClientManager {
             session.connected = false;
             info!("客户端 {} 已断开连接", vm_id);
         }
+    }
+
+    /// 获取输入事件接收器（只能获取一次）
+    pub async fn take_input_event_receiver(&self) -> Option<mpsc::UnboundedReceiver<VerifiedInputEvent>> {
+        let mut rx = self.input_event_rx.write().await;
+        rx.take()
+    }
+
+    /// 获取输入事件发送器（克隆用于多个客户端）
+    pub fn get_input_event_sender(&self) -> mpsc::UnboundedSender<VerifiedInputEvent> {
+        self.input_event_tx.clone()
+    }
+
+    /// 获取原始输入事件接收器（只能获取一次）
+    pub async fn take_raw_input_event_receiver(&self) -> Option<mpsc::UnboundedReceiver<(String, RawInputEvent)>> {
+        let mut rx = self.raw_input_event_rx.write().await;
+        rx.take()
+    }
+
+    /// 获取原始输入事件发送器（克隆用于多个客户端）
+    pub fn get_raw_input_event_sender(&self) -> mpsc::UnboundedSender<(String, RawInputEvent)> {
+        self.raw_input_event_tx.clone()
     }
 }
 

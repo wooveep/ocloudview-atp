@@ -1,12 +1,16 @@
 //! 键盘验证器实现
 
 use async_trait::async_trait;
-use serde_json::json;
+#[allow(unused_imports)]
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info};
-use verifier_core::{Event, Result, Verifier, VerifierError, VerifierType, VerifyResult};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
+#[allow(unused_imports)]
+use verifier_core::{Event, RawInputEvent, Result, Verifier, VerifierError, VerifierTransport, VerifierType, VerifyResult};
 
-/// 键盘验证器 trait
+/// 键盘验证器 trait (保留用于兼容)
+#[allow(dead_code)]
 #[async_trait]
 pub trait KeyboardVerifier: Verifier {
     /// 验证键盘事件
@@ -70,7 +74,7 @@ mod linux {
                                     // 检查是否有键盘按键（至少有字母键或数字键）
                                     if keys.contains(Key::KEY_A) || keys.contains(Key::KEY_1) {
                                         debug!("找到键盘设备: {:?} ({})", path, device.name().unwrap_or("未知"));
-                                        
+
                                         // 设置为非阻塞模式以确保 fetch_events() 正常工作
                                         use std::os::unix::io::AsRawFd;
                                         let fd = device.as_raw_fd();
@@ -80,7 +84,7 @@ mod linux {
                                                 libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
                                             }
                                         }
-                                        
+
                                         keyboards.push(device);
                                     }
                                 }
@@ -93,49 +97,71 @@ mod linux {
             Ok(keyboards)
         }
 
-        /// 监听键盘事件（带超时）
-        async fn wait_for_key_event(&self, expected_key: &str, timeout_ms: u64) -> Result<bool> {
-            let timeout = tokio::time::Duration::from_millis(timeout_ms);
-            let start_time = tokio::time::Instant::now();
+        /// 获取按键名称
+        fn key_to_name(key: Key) -> String {
+            let key_name = format!("{:?}", key);
+            key_name.strip_prefix("KEY_").unwrap_or(&key_name).to_string()
+        }
 
-            debug!("等待键盘事件: {} (超时: {}ms)", expected_key, timeout_ms);
+        /// 启动输入事件监听并转发到服务端
+        ///
+        /// 此方法会持续监听键盘事件，并将每个事件实时发送到服务端。
+        pub async fn start(self, transport: Arc<RwLock<Box<dyn VerifierTransport>>>) -> Result<()> {
+            info!("启动键盘输入上报模式");
 
             loop {
-                // 检查超时
-                if start_time.elapsed() > timeout {
-                    debug!("等待超时");
-                    return Ok(false);
-                }
-
                 // 检查所有设备
                 let mut devices = self.devices.lock().await;
                 for device in devices.iter_mut() {
                     // 尝试读取事件（非阻塞）
-                    while let Ok(events) = device.fetch_events() {
-                        for event in events {
-                            if let InputEventKind::Key(key) = event.kind() {
-                                let key_name = format!("{:?}", key);
-                                debug!("检测到按键: {} (value: {})", key_name, event.value());
+                    match device.fetch_events() {
+                        Ok(events) => {
+                            for event in events {
+                                if let InputEventKind::Key(key) = event.kind() {
+                                    let key_code = key.code();
+                                    let key_name = Self::key_to_name(key);
+                                    let value = event.value();
 
-                                // 只检查按下事件（value == 1）
-                                if event.value() == 1 {
-                                    // 简单的按键名称匹配
-                                    if self.match_key(&key_name, expected_key) {
-                                        info!("匹配到预期按键: {}", expected_key);
-                                        return Ok(true);
+                                    debug!("检测到按键: {} (code: {}, value: {})", key_name, key_code, value);
+
+                                    // 构造原始输入事件
+                                    let timestamp = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis() as i64;
+
+                                    let raw_event = RawInputEvent {
+                                        message_type: "raw_input_event".to_string(),
+                                        event_type: "keyboard".to_string(),
+                                        code: key_code,
+                                        value,
+                                        name: key_name.clone(),
+                                        timestamp,
+                                    };
+
+                                    // 发送到服务端
+                                    let mut transport = transport.write().await;
+                                    if let Err(e) = transport.send_raw_input_event(&raw_event).await {
+                                        warn!("发送键盘事件失败: {}", e);
+                                    } else {
+                                        debug!("已发送键盘事件: {} (value: {})", key_name, value);
                                     }
                                 }
                             }
+                        }
+                        Err(_) => {
+                            // 非阻塞模式下无事件时会返回错误，忽略
                         }
                     }
                 }
 
                 // 短暂休眠避免 CPU 占用过高
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
             }
         }
 
-        /// 匹配按键名称
+        /// 匹配按键名称 (保留用于兼容)
+        #[allow(dead_code)]
         fn match_key(&self, detected: &str, expected: &str) -> bool {
             // 移除 KEY_ 前缀
             let detected = detected.strip_prefix("KEY_").unwrap_or(detected);
@@ -148,8 +174,11 @@ mod linux {
 
     #[async_trait]
     impl Verifier for LinuxKeyboardVerifier {
-        async fn verify(&self, event: Event) -> Result<VerifyResult> {
-            self.verify_keyboard(&event).await
+        async fn verify(&self, _event: Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify 方法".to_string(),
+            ))
         }
 
         fn verifier_type(&self) -> VerifierType {
@@ -159,56 +188,11 @@ mod linux {
 
     #[async_trait]
     impl KeyboardVerifier for LinuxKeyboardVerifier {
-        async fn verify_keyboard(&self, event: &Event) -> Result<VerifyResult> {
-            let start_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            debug!("验证键盘事件: {:?}", event);
-
-            // 从事件数据中提取按键信息
-            let key = event
-                .data
-                .get("key")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    VerifierError::VerificationFailed("事件缺少 key 字段".to_string())
-                })?;
-
-            // 获取超时时间（默认 5000ms）
-            let timeout_ms = event
-                .data
-                .get("timeout_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5000);
-
-            // 等待按键事件
-            let verified = self.wait_for_key_event(key, timeout_ms).await?;
-
-            let end_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            let latency_ms = (end_time - start_time) as u64;
-
-            Ok(VerifyResult {
-                event_id: event
-                    .data
-                    .get("event_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-                verified,
-                timestamp: end_time,
-                latency_ms,
-                details: json!({
-                    "key": key,
-                    "platform": "linux",
-                    "method": "evdev",
-                }),
-            })
+        async fn verify_keyboard(&self, _event: &Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify_keyboard 方法".to_string(),
+            ))
         }
     }
 }
@@ -231,6 +215,8 @@ mod windows_impl {
     #[derive(Debug, Clone)]
     struct KeyEvent {
         key: String,
+        vk_code: u32,
+        value: i32,  // 1=按下, 0=释放
         timestamp: Instant,
     }
 
@@ -301,15 +287,25 @@ mod windows_impl {
             wparam: WPARAM,
             lparam: LPARAM,
         ) -> LRESULT {
-            if code >= 0 && wparam.0 as u32 == WM_KEYDOWN {
+            if code >= 0 {
                 // 获取键盘信息
                 let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
                 let vk_code = kb.vkCode;
+                let msg = wparam.0 as u32;
+
+                // 判断是按下还是释放
+                let value = match msg {
+                    WM_KEYDOWN | WM_SYSKEYDOWN => 1,
+                    WM_KEYUP | WM_SYSKEYUP => 0,
+                    _ => return CallNextHookEx(None, code, wparam, lparam),
+                };
 
                 // 转换为按键名称
                 if let Some(key_name) = Self::vk_code_to_key_name(vk_code) {
                     let event = KeyEvent {
                         key: key_name.clone(),
+                        vk_code,
+                        value,
                         timestamp: Instant::now(),
                     };
 
@@ -322,7 +318,7 @@ mod windows_impl {
                         }
                     }
 
-                    debug!("检测到按键: {} (VK: 0x{:X})", key_name, vk_code);
+                    debug!("检测到按键: {} (VK: 0x{:X}, value: {})", key_name, vk_code, value);
                 }
             }
 
@@ -412,45 +408,50 @@ mod windows_impl {
             }
         }
 
-        /// 等待并匹配键盘事件
-        async fn wait_for_key_event(&self, expected_key: &str, timeout_ms: u64) -> Result<bool> {
-            let timeout = tokio::time::Duration::from_millis(timeout_ms);
-            let start_time = tokio::time::Instant::now();
-
-            debug!("等待键盘事件: {} (超时: {}ms)", expected_key, timeout_ms);
+        /// 启动输入事件监听并转发到服务端
+        ///
+        /// 此方法会持续监听键盘事件，并将每个事件实时发送到服务端。
+        pub async fn start(self, transport: Arc<RwLock<Box<dyn VerifierTransport>>>) -> Result<()> {
+            info!("启动键盘输入上报模式 (Windows)");
 
             loop {
-                // 检查超时
-                if start_time.elapsed() > timeout {
-                    debug!("等待超时");
-                    return Ok(false);
-                }
-
                 // 检查事件队列
-                if let Ok(mut queue) = self.event_queue.lock() {
-                    // 查找匹配的事件
-                    let mut found_index = None;
-                    for (i, event) in queue.iter().enumerate() {
-                        if self.match_key(&event.key, expected_key) {
-                            found_index = Some(i);
-                            break;
-                        }
+                let events_to_send: Vec<KeyEvent> = {
+                    if let Ok(mut queue) = self.event_queue.lock() {
+                        let events: Vec<_> = queue.drain(..).collect();
+                        events
+                    } else {
+                        Vec::new()
                     }
+                };
 
-                    // 如果找到匹配事件，移除它并返回成功
-                    if let Some(index) = found_index {
-                        queue.remove(index);
-                        info!("匹配到预期按键: {}", expected_key);
-                        return Ok(true);
+                // 发送事件
+                for event in events_to_send {
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+
+                    let raw_event = RawInputEvent {
+                        message_type: "raw_input_event".to_string(),
+                        event_type: "keyboard".to_string(),
+                        code: event.vk_code as u16,
+                        value: event.value,
+                        name: event.key.clone(),
+                        timestamp,
+                    };
+
+                    // 发送到服务端
+                    let mut transport = transport.write().await;
+                    if let Err(e) = transport.send_raw_input_event(&raw_event).await {
+                        warn!("发送键盘事件失败: {}", e);
+                    } else {
+                        debug!("已发送键盘事件: {} (value: {})", event.key, event.value);
                     }
-
-                    // 清理过期事件（超过 10 秒）
-                    let now = Instant::now();
-                    queue.retain(|e| now.duration_since(e.timestamp).as_secs() < 10);
                 }
 
                 // 短暂休眠避免 CPU 占用过高
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
             }
         }
 
@@ -467,8 +468,11 @@ mod windows_impl {
 
     #[async_trait]
     impl Verifier for WindowsKeyboardVerifier {
-        async fn verify(&self, event: Event) -> Result<VerifyResult> {
-            self.verify_keyboard(&event).await
+        async fn verify(&self, _event: Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify 方法".to_string(),
+            ))
         }
 
         fn verifier_type(&self) -> VerifierType {
@@ -478,56 +482,11 @@ mod windows_impl {
 
     #[async_trait]
     impl KeyboardVerifier for WindowsKeyboardVerifier {
-        async fn verify_keyboard(&self, event: &Event) -> Result<VerifyResult> {
-            let start_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            debug!("验证键盘事件: {:?}", event);
-
-            // 从事件数据中提取按键信息
-            let key = event
-                .data
-                .get("key")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    VerifierError::VerificationFailed("事件缺少 key 字段".to_string())
-                })?;
-
-            // 获取超时时间（默认 5000ms）
-            let timeout_ms = event
-                .data
-                .get("timeout_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5000);
-
-            // 等待按键事件
-            let verified = self.wait_for_key_event(key, timeout_ms).await?;
-
-            let end_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            let latency_ms = (end_time - start_time) as u64;
-
-            Ok(VerifyResult {
-                event_id: event
-                    .data
-                    .get("event_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-                verified,
-                timestamp: end_time,
-                latency_ms,
-                details: json!({
-                    "key": key,
-                    "platform": "windows",
-                    "method": "hook_api",
-                }),
-            })
+        async fn verify_keyboard(&self, _event: &Event) -> Result<VerifyResult> {
+            // 输入上报模式下不再使用 verify 方法
+            Err(VerifierError::VerificationFailed(
+                "输入上报模式下不支持 verify_keyboard 方法".to_string(),
+            ))
         }
     }
 }
