@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use verifier_core::{Event, Result, Verifier, VerifierError, VerifierType, VerifyResult};
 
 /// 键盘验证器 trait
