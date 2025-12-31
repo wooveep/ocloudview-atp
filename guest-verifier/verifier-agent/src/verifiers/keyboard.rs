@@ -48,7 +48,7 @@ mod linux {
             })
         }
 
-        /// 查找所有键盘设备
+        /// 査找所有键盘设备
         fn find_keyboard_devices() -> Result<Vec<Device>> {
             let mut keyboards = Vec::new();
 
@@ -70,6 +70,17 @@ mod linux {
                                     // 检查是否有键盘按键（至少有字母键或数字键）
                                     if keys.contains(Key::KEY_A) || keys.contains(Key::KEY_1) {
                                         debug!("找到键盘设备: {:?} ({})", path, device.name().unwrap_or("未知"));
+                                        
+                                        // 设置为非阻塞模式以确保 fetch_events() 正常工作
+                                        use std::os::unix::io::AsRawFd;
+                                        let fd = device.as_raw_fd();
+                                        unsafe {
+                                            let flags = libc::fcntl(fd, libc::F_GETFL, 0);
+                                            if flags >= 0 {
+                                                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                                            }
+                                        }
+                                        
                                         keyboards.push(device);
                                     }
                                 }

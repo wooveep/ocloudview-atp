@@ -89,6 +89,17 @@ mod linux {
                                         path,
                                         device.name().unwrap_or("未知")
                                     );
+                                    
+                                    // 设置为非阻塞模式以确保 fetch_events() 正常工作
+                                    use std::os::unix::io::AsRawFd;
+                                    let fd = device.as_raw_fd();
+                                    unsafe {
+                                        let flags = libc::fcntl(fd, libc::F_GETFL, 0);
+                                        if flags >= 0 {
+                                            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                                        }
+                                    }
+                                    
                                     mice.push(device);
                                 }
                             }

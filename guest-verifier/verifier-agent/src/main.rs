@@ -759,6 +759,17 @@ async fn run_linux_input_test(enabled_types: &[VerifierTypeArg], duration_secs: 
                         println!("找到设备: {} ({})",
                             device.name().unwrap_or("未知"),
                             path.display());
+                        
+                        // 设置为非阻塞模式
+                        use std::os::unix::io::AsRawFd;
+                        let fd = device.as_raw_fd();
+                        unsafe {
+                            let flags = libc::fcntl(fd, libc::F_GETFL, 0);
+                            if flags >= 0 {
+                                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                            }
+                        }
+                        
                         devices.push(device);
                     }
                 }
@@ -779,33 +790,49 @@ async fn run_linux_input_test(enabled_types: &[VerifierTypeArg], duration_secs: 
     let start_time = Instant::now();
     let duration = std::time::Duration::from_secs(duration_secs);
     let mut event_count = 0u32;
+    let mut loop_count = 0u32;
 
     while start_time.elapsed() < duration {
-        for device in devices.iter_mut() {
-            if let Ok(events) = device.fetch_events() {
-                for event in events {
-                    match event.kind() {
-                        InputEventKind::Key(key) if event.value() == 1 => {
-                            event_count += 1;
-                            let key_name = format!("{:?}", key);
-                            if key_name.starts_with("KEY_") {
-                                println!("[{:>4}] ⌨️  键盘: {}", event_count,
-                                    key_name.strip_prefix("KEY_").unwrap_or(&key_name));
-                            } else if key_name.starts_with("BTN_") {
-                                println!("[{:>4}] 🖱️  鼠标: {} 点击", event_count,
-                                    match key_name.as_str() {
-                                        "BTN_LEFT" => "左键",
-                                        "BTN_RIGHT" => "右键",
-                                        "BTN_MIDDLE" => "中键",
-                                        _ => &key_name,
-                                    });
+        loop_count += 1;
+        
+        for (_dev_idx, device) in devices.iter_mut().enumerate() {
+            match device.fetch_events() {
+                Ok(events) => {
+                    for event in events {
+                        match event.kind() {
+                            InputEventKind::Key(key) if event.value() == 1 => {
+                                event_count += 1;
+                                let key_name = format!("{:?}", key);
+                                if key_name.starts_with("KEY_") {
+                                    println!("[{:>4}] ⌨️  键盘: {}", event_count,
+                                        key_name.strip_prefix("KEY_").unwrap_or(&key_name));
+                                } else if key_name.starts_with("BTN_") {
+                                    println!("[{:>4}] 🖱️  鼠标: {} 点击", event_count,
+                                        match key_name.as_str() {
+                                            "BTN_LEFT" => "左键",
+                                            "BTN_RIGHT" => "右键",
+                                            "BTN_MIDDLE" => "中键",
+                                            _ => &key_name,
+                                        });
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                }
+                Err(_) => {
+                    // 忽略错误,继续轮询
                 }
             }
         }
+        
+        // 每10秒显示一次状态更新
+        if loop_count % 1000 == 0 {
+            let elapsed = start_time.elapsed().as_secs();
+            let remaining = duration_secs.saturating_sub(elapsed);
+            println!("... 剩余 {} 秒 (已检测 {} 个事件) ...", remaining, event_count);
+        }
+        
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 
