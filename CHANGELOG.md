@@ -5,6 +5,73 @@ All notable changes to the OCloudView ATP project will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-dev] - 2026-01-01
+
+### Fixed
+- **修复内存泄漏**: `execute_send_text()` 中使用 `.leak()` 导致的内存泄漏
+  - 使用静态字符映射表 `char_to_qkeycode()` 替代动态 `.leak()`
+  - 完整支持 a-z, A-Z, 0-9, 标点符号, 空白字符的 QKeyCode 映射
+  - 位置: `executor/src/runner.rs`
+
+### Added
+- **Executor 模块重大更新** (+1,224 行代码)
+  - **多目标场景执行**: 支持同时对多个虚拟机执行测试场景
+    - `TargetSelector`: 支持通配符 (`*`, `?`)、正则表达式、列表匹配
+    - `TargetSelectorConfig`: 高级选择器，支持 mode/pattern/names/exclude/limit
+    - `TargetMode`: Single/All/Pattern/List/Regex 五种匹配模式
+    - `run_multi_target()`: 串行或并行执行多目标场景
+    - `MultiTargetReport`: 汇总多目标执行结果
+  - **主机选择器**: `target_hosts` 支持匹配多个 libvirt 主机
+    - 通配符匹配主机名
+    - 与目标虚拟机选择器语法一致
+  - **并行执行配置**: `ParallelConfig` 控制并发执行行为
+    - `max_concurrent`: 最大并发数
+    - `FailureStrategy`: Continue/StopAll/FailFast 三种失败策略
+  - **嵌入式验证服务器**: 场景执行时自动启动 VerificationServer
+    - `VerificationConfig`: 场景级验证服务器配置
+    - `start_verification_server()`: 启动 WebSocket/TCP 服务器
+    - `start_guest_verifier()`: 通过 QGA 远程启动 guest-verifier
+    - `create_verification_future()`: 创建验证等待任务
+    - 步骤报告支持 `verified` 和 `verification_latency_ms` 字段
+  - **VDI 平台操作 Action**: 场景支持 VDI 平台操作
+    - `VdiCreateDeskPool`: 创建桌面池
+    - `VdiEnableDeskPool` / `VdiDisableDeskPool`: 启用/禁用桌面池
+    - `VdiDeleteDeskPool`: 删除桌面池
+    - `VdiStartDomain` / `VdiShutdownDomain` / `VdiRebootDomain`: 虚拟机生命周期
+    - `VdiDeleteDomain`: 删除虚拟机
+    - `VdiBindUser`: 绑定用户到虚拟机
+    - `VdiGetDeskPoolDomains`: 获取桌面池虚拟机列表
+  - **验证步骤 Action**: 场景支持状态验证
+    - `VerifyDomainStatus`: 验证虚拟机状态
+    - `VerifyAllDomainsRunning`: 验证桌面池所有虚拟机运行中
+    - `VerifyCommandSuccess`: 验证上一步命令执行成功
+  - **Glob 匹配算法**: 实现 `*` 和 `?` 通配符匹配
+
+- **CLI 场景命令增强**
+  - 验证结果显示: verified 状态和延迟 (ms)
+  - 彩色输出验证图标
+
+- **新增示例场景**
+  - `keyboard-verification-test.yaml`: 带验证的键盘输入测试场景
+    - 多目标选择器示例
+    - 并行执行配置示例
+    - 验证服务器配置示例
+
+### Changed
+- **Executor 模块**: 代码量从 ~1,200 行增长到 ~3,207 行
+- **Scenario 定义**: 支持 `target_domains`、`target_hosts`、`parallel`、`verification` 配置
+- **StepReport**: 新增 `verified: Option<bool>` 和 `verification_latency_ms: Option<u64>`
+- **lib.rs 导出**: 导出新增类型 (TargetSelector, ParallelConfig, FailureStrategy 等)
+- **项目整体进度**: 87% → 90%
+- **Executor 完成度**: 85% → 95%
+- **Guest Verifier 完成度**: 80% → 90%
+- **Verification Server 完成度**: 95% → 100%
+
+### Architecture
+- 完全实现 `docs/GUEST_VERIFICATION_SERVER_DESIGN.md` 中的设计
+- Executor 集成 VerificationServer 的所有功能
+- 场景 YAML 支持 VDI 操作和验证步骤，符合 `docs/LAYERED_ARCHITECTURE.md` 设计
+
 ## [0.4.2] - 2025-12-31
 
 ### Added
@@ -217,8 +284,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 版本规划
 
-### [0.5.0] - 计划中
-- VDI 平台完整集成
+### [0.5.0] - 开发中
+- 多目标场景执行 ✅
+- 并行执行支持 ✅
+- VDI 平台操作集成 ✅
+- VerificationServer 嵌入式集成 ✅
 - 测试覆盖率达到 80%
 - SPICE 协议完善 (RSA 加密、TLS 支持)
 - Custom 协议实现

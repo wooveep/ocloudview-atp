@@ -1,24 +1,30 @@
 //! 场景执行器
 
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{info, warn, error};
 use tokio::time::timeout;
-use serde::{Deserialize, Serialize};
-use chrono::Utc;
+use tracing::{debug, error, info, warn};
 use virt::domain::Domain;
 
-use atp_transport::TransportManager;
 use atp_protocol::{
-    Protocol, ProtocolRegistry,
-    qmp::QmpProtocol,
     qga::QgaProtocol,
-    spice::{SpiceProtocol, MouseButton},
+    qmp::QmpProtocol,
+    spice::{MouseButton, SpiceProtocol},
+    Protocol, ProtocolRegistry,
 };
-use atp_storage::{Storage, TestReportRecord, ExecutionStepRecord};
-use atp_vdiplatform::{VdiClient, models::CreateDeskPoolRequest};
+use atp_storage::{ExecutionStepRecord, Storage, TestReportRecord};
+use atp_transport::{ListDomainsFilter, TransportManager};
+use atp_vdiplatform::{models::CreateDeskPoolRequest, VdiClient};
+use verification_server::{
+    client::ClientManager, server::ServerConfig, service::ServiceConfig, VerificationServer,
+    VerificationService,
+};
 
-use crate::{Result, Scenario, ScenarioStep, Action, ExecutorError};
+use crate::{
+    Action, ExecutorError, FailureStrategy, Result, Scenario, ScenarioStep, VerificationConfig,
+};
 
 /// 场景执行器
 pub struct ScenarioRunner {
@@ -44,6 +50,18 @@ pub struct ScenarioRunner {
 
     /// 数据库存储 (可选)
     storage: Option<Arc<Storage>>,
+
+    /// 验证服务 (可选,运行时创建)
+    verification_service: Option<Arc<VerificationService>>,
+
+    /// 验证服务器后台任务句柄
+    verification_server_handle: Option<tokio::task::JoinHandle<()>>,
+
+    /// 客户端管理器 (用于验证)
+    client_manager: Option<Arc<ClientManager>>,
+
+    /// 当前验证用的 VM ID (运行时设置)
+    verification_vm_id: Option<String>,
 }
 
 impl ScenarioRunner {
@@ -62,6 +80,10 @@ impl ScenarioRunner {
             current_domain: None,
             default_timeout: Duration::from_secs(30),
             storage: None,
+            verification_service: None,
+            verification_server_handle: None,
+            client_manager: None,
+            verification_vm_id: None,
         }
     }
 
@@ -96,11 +118,38 @@ impl ScenarioRunner {
 
         report.tags = scenario.tags.clone();
 
+        // 检查是否需要验证 (任意步骤 verify=true 或配置了 verification)
+        let needs_verification =
+            scenario.verification.is_some() || scenario.steps.iter().any(|s| s.verify);
+
+        // 如果需要验证，启动嵌入式验证服务器
+        if needs_verification {
+            if let Err(e) = self.start_verification_server(scenario).await {
+                error!("启动验证服务器失败: {}", e);
+                return Err(e);
+            }
+        }
+
         // 初始化协议连接 (如果指定了目标虚拟机)
         if let Some(target_domain) = &scenario.target_domain {
             if let Err(e) = self.initialize_protocols(scenario, target_domain).await {
                 error!("初始化协议失败: {}", e);
+                self.cleanup_verification_server().await;
                 return Err(e);
+            }
+        }
+
+        // 在协议初始化完成后，通过 QGA 启动 guest-verifier
+        if needs_verification {
+            if let (Some(verification_config), Some(target_domain)) =
+                (&scenario.verification, &scenario.target_domain)
+            {
+                if let Err(e) = self
+                    .start_guest_verifier(verification_config, target_domain)
+                    .await
+                {
+                    warn!("启动 guest-verifier 失败: {}, 继续执行但验证可能失败", e);
+                }
             }
         }
 
@@ -123,6 +172,8 @@ impl ScenarioRunner {
                         error: Some(e.to_string()),
                         duration_ms: 0,
                         output: None,
+                        verified: None,
+                        verification_latency_ms: None,
                     };
                     report.add_step(failed_step);
                     break; // 失败后停止执行
@@ -133,13 +184,16 @@ impl ScenarioRunner {
         // 清理协议连接
         self.cleanup_protocols().await;
 
+        // 清理验证服务器
+        if needs_verification {
+            self.cleanup_verification_server().await;
+        }
+
         report.duration_ms = start_time.elapsed().as_millis() as u64;
 
         info!(
             "场景执行完成: {} - {}/{} 步骤成功",
-            scenario.name,
-            report.passed_count,
-            report.steps_executed
+            scenario.name, report.passed_count, report.steps_executed
         );
 
         // 保存执行报告到数据库
@@ -153,21 +207,276 @@ impl ScenarioRunner {
         Ok(report)
     }
 
+    /// 执行多目标场景
+    ///
+    /// 当场景配置了多目标选择器 (target_domains) 时，此方法会:
+    /// 1. 获取所有可用虚拟机列表
+    /// 2. 筛选匹配的虚拟机
+    /// 3. 对每个虚拟机执行场景 (串行或并行)
+    ///
+    /// 返回所有虚拟机的执行报告
+    pub async fn run_multi_target(&mut self, scenario: &Scenario) -> Result<MultiTargetReport> {
+        info!("开始执行多目标场景: {}", scenario.name);
+        let start_time = Instant::now();
+
+        // 获取目标选择器
+        let selector = scenario
+            .get_target_selector()
+            .ok_or_else(|| ExecutorError::ConfigError("未配置目标虚拟机".to_string()))?;
+
+        // 如果不是多目标场景，直接使用单目标执行
+        if !selector.is_multi_target() {
+            let report = self.run(scenario).await?;
+            return Ok(MultiTargetReport {
+                scenario_name: scenario.name.clone(),
+                total_targets: 1,
+                successful: if report.passed { 1 } else { 0 },
+                failed: if report.passed { 0 } else { 1 },
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                reports: vec![report],
+            });
+        }
+
+        // 获取所有可用虚拟机列表
+        let all_domains = self.list_available_domains(scenario).await?;
+        info!("发现 {} 个虚拟机", all_domains.len());
+
+        // 筛选匹配的虚拟机
+        let matched_domains: Vec<String> = scenario
+            .filter_targets(&all_domains)
+            .into_iter()
+            .cloned()
+            .collect();
+
+        if matched_domains.is_empty() {
+            warn!("没有匹配的虚拟机");
+            return Ok(MultiTargetReport {
+                scenario_name: scenario.name.clone(),
+                total_targets: 0,
+                successful: 0,
+                failed: 0,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                reports: vec![],
+            });
+        }
+
+        info!(
+            "匹配到 {} 个虚拟机: {:?}",
+            matched_domains.len(),
+            matched_domains
+        );
+
+        // 获取并行配置
+        let parallel_config = scenario.parallel.clone().unwrap_or_default();
+        let failure_strategy = parallel_config.on_failure;
+
+        let mut reports = Vec::new();
+        let mut successful = 0;
+        let mut failed = 0;
+
+        if parallel_config.enabled {
+            // 并行执行
+            reports = self
+                .run_parallel(scenario, &matched_domains, &parallel_config)
+                .await?;
+            for report in &reports {
+                if report.passed {
+                    successful += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+        } else {
+            // 串行执行
+            for domain_name in &matched_domains {
+                info!("执行目标: {}", domain_name);
+
+                // 创建临时场景，设置单个目标
+                let mut single_scenario = scenario.clone();
+                single_scenario.target_domain = Some(domain_name.clone());
+                single_scenario.target_domains = None;
+
+                let report = self.run(&single_scenario).await;
+
+                match report {
+                    Ok(r) => {
+                        if r.passed {
+                            successful += 1;
+                        } else {
+                            failed += 1;
+                        }
+                        reports.push(r);
+
+                        // 检查失败策略
+                        if failed > 0 && failure_strategy == FailureStrategy::StopAll {
+                            warn!("检测到失败，根据策略停止所有执行");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("执行失败: {} - {}", domain_name, e);
+                        failed += 1;
+
+                        // 创建失败报告
+                        let failed_report = ExecutionReport {
+                            scenario_name: format!("{} ({})", scenario.name, domain_name),
+                            description: scenario.description.clone(),
+                            tags: scenario.tags.clone(),
+                            passed: false,
+                            steps_executed: 0,
+                            passed_count: 0,
+                            failed_count: 1,
+                            duration_ms: 0,
+                            steps: vec![],
+                        };
+                        reports.push(failed_report);
+
+                        if failure_strategy == FailureStrategy::StopAll {
+                            warn!("检测到失败，根据策略停止所有执行");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(MultiTargetReport {
+            scenario_name: scenario.name.clone(),
+            total_targets: matched_domains.len(),
+            successful,
+            failed,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+            reports,
+        })
+    }
+
+    /// 获取可用虚拟机列表
+    async fn list_available_domains(&self, scenario: &Scenario) -> Result<Vec<String>> {
+        let hosts = self.transport_manager.list_hosts().await;
+        let host_id = scenario
+            .target_host
+            .as_deref()
+            .or_else(|| hosts.first().map(String::as_str))
+            .ok_or_else(|| ExecutorError::ConfigError("未指定目标主机且无可用主机".to_string()))?;
+
+        let domain_infos = self
+            .transport_manager
+            .execute_on_host(host_id, |conn| async move {
+                conn.list_domains(ListDomainsFilter::all()).await
+            })
+            .await
+            .map_err(|e| ExecutorError::TransportError(e.to_string()))?;
+
+        // 从 LibvirtDomainInfo 中提取虚拟机名称
+        let domains: Vec<String> = domain_infos.into_iter().map(|info| info.name).collect();
+        Ok(domains)
+    }
+
+    /// 并行执行场景
+    async fn run_parallel(
+        &mut self,
+        scenario: &Scenario,
+        domains: &[String],
+        config: &crate::ParallelConfig,
+    ) -> Result<Vec<ExecutionReport>> {
+        use tokio::sync::Semaphore;
+
+        let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
+        let mut handles = Vec::new();
+
+        // 注意: 这里需要创建新的 runner 实例用于并行执行
+        // 因为当前 runner 有可变状态，不能在多个任务间共享
+        // 这是一个简化实现，实际应该使用更好的并发模型
+
+        for domain_name in domains {
+            let permit = semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| ExecutorError::ConfigError("获取信号量失败".to_string()))?;
+
+            let domain = domain_name.clone();
+            let scenario = scenario.clone();
+            let transport_manager = Arc::clone(&self.transport_manager);
+            let protocol_registry = Arc::clone(&self.protocol_registry);
+            let storage = self.storage.clone();
+
+            let handle = tokio::spawn(async move {
+                let mut runner = ScenarioRunner::new(transport_manager, protocol_registry);
+                if let Some(s) = storage {
+                    runner = runner.with_storage(s);
+                }
+
+                let mut single_scenario = scenario;
+                single_scenario.target_domain = Some(domain.clone());
+                single_scenario.target_domains = None;
+
+                let result = runner.run(&single_scenario).await;
+                drop(permit);
+                result
+            });
+
+            handles.push(handle);
+        }
+
+        let mut reports = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(report)) => reports.push(report),
+                Ok(Err(e)) => {
+                    error!("并行任务执行失败: {}", e);
+                    // 创建失败报告
+                    reports.push(ExecutionReport {
+                        scenario_name: scenario.name.clone(),
+                        description: scenario.description.clone(),
+                        tags: scenario.tags.clone(),
+                        passed: false,
+                        steps_executed: 0,
+                        passed_count: 0,
+                        failed_count: 1,
+                        duration_ms: 0,
+                        steps: vec![],
+                    });
+                }
+                Err(e) => {
+                    error!("并行任务 panic: {}", e);
+                    reports.push(ExecutionReport {
+                        scenario_name: scenario.name.clone(),
+                        description: scenario.description.clone(),
+                        tags: scenario.tags.clone(),
+                        passed: false,
+                        steps_executed: 0,
+                        passed_count: 0,
+                        failed_count: 1,
+                        duration_ms: 0,
+                        steps: vec![],
+                    });
+                }
+            }
+        }
+
+        Ok(reports)
+    }
+
     /// 初始化协议连接
     async fn initialize_protocols(&mut self, scenario: &Scenario, domain_name: &str) -> Result<()> {
         info!("初始化协议连接: 虚拟机 = {}", domain_name);
 
         // 获取目标主机的连接
         let hosts = self.transport_manager.list_hosts().await;
-        let host_id = scenario.target_host.as_deref()
+        let host_id = scenario
+            .target_host
+            .as_deref()
             .or_else(|| hosts.first().map(String::as_str))
             .ok_or_else(|| ExecutorError::ConfigError("未指定目标主机且无可用主机".to_string()))?;
 
         // 通过 transport manager 获取 domain
-        let domain = self.transport_manager
-            .execute_on_host(host_id, |conn| async move {
-                conn.get_domain(domain_name).await
-            })
+        let domain = self
+            .transport_manager
+            .execute_on_host(
+                host_id,
+                |conn| async move { conn.get_domain(domain_name).await },
+            )
             .await
             .map_err(|e| ExecutorError::TransportError(e.to_string()))?;
 
@@ -223,14 +532,164 @@ impl ScenarioRunner {
         self.current_domain = None;
     }
 
+    /// 启动嵌入式验证服务器
+    async fn start_verification_server(&mut self, scenario: &Scenario) -> Result<()> {
+        info!("启动嵌入式验证服务器");
+
+        // 设置验证用的 VM ID（优先使用 verification.vm_id，其次使用 target_domain）
+        self.verification_vm_id = scenario
+            .verification
+            .as_ref()
+            .and_then(|c| c.vm_id.clone())
+            .or_else(|| scenario.target_domain.clone());
+
+        // 从场景配置获取服务器地址
+        let (ws_addr, tcp_addr) = if let Some(config) = &scenario.verification {
+            (
+                config
+                    .ws_addr
+                    .clone()
+                    .unwrap_or_else(|| "0.0.0.0:8765".to_string()),
+                config
+                    .tcp_addr
+                    .clone()
+                    .unwrap_or_else(|| "0.0.0.0:8766".to_string()),
+            )
+        } else {
+            ("0.0.0.0:8765".to_string(), "0.0.0.0:8766".to_string())
+        };
+
+        // 创建客户端管理器
+        let client_manager = Arc::new(ClientManager::new());
+        self.client_manager = Some(Arc::clone(&client_manager));
+
+        // 创建验证服务
+        let service_config = ServiceConfig::default();
+        let verification_service = Arc::new(VerificationService::new(
+            Arc::clone(&client_manager),
+            service_config,
+        ));
+        self.verification_service = Some(Arc::clone(&verification_service));
+
+        // 创建服务器配置
+        let server_config = ServerConfig {
+            websocket_addr: ws_addr.parse().ok(),
+            tcp_addr: tcp_addr.parse().ok(),
+        };
+
+        // 创建并启动验证服务器
+        let server = VerificationServer::new(server_config, Arc::clone(&client_manager));
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = server.start().await {
+                error!("验证服务器错误: {}", e);
+            }
+        });
+
+        self.verification_server_handle = Some(handle);
+
+        // 等待服务器启动
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        info!("验证服务器已启动: ws={}, tcp={}", ws_addr, tcp_addr);
+
+        Ok(())
+    }
+
+    /// 通过 QGA 启动 guest-verifier
+    async fn start_guest_verifier(
+        &self,
+        config: &VerificationConfig,
+        _target_domain: &str,
+    ) -> Result<()> {
+        let qga = self
+            .qga_protocol
+            .as_ref()
+            .ok_or_else(|| ExecutorError::ProtocolError("QGA 协议未初始化".to_string()))?;
+
+        // 获取验证器路径
+        let verifier_path = config
+            .guest_verifier_path
+            .clone()
+            .unwrap_or_else(|| "/usr/local/bin/verifier-agent".to_string());
+
+        // 获取验证服务器地址（需要 VM 能访问的地址）
+        let server_addr = config
+            .ws_addr
+            .clone()
+            .unwrap_or_else(|| "ws://host.local:8765".to_string());
+
+        // 构建启动命令
+        let command = format!(
+            "nohup {} --mode report --server {} > /tmp/verifier-agent.log 2>&1 &",
+            verifier_path, server_addr
+        );
+
+        info!("启动 guest-verifier: {}", command);
+
+        // 通过 QGA 执行命令
+        let status = qga
+            .exec_shell(&command)
+            .await
+            .map_err(|e| ExecutorError::ProtocolError(format!("QGA exec_shell 失败: {}", e)))?;
+
+        if let Some(exit_code) = status.exit_code {
+            if exit_code != 0 {
+                let stderr = status.decode_stderr().unwrap_or_default();
+                return Err(ExecutorError::ProtocolError(format!(
+                    "guest-verifier 启动失败 ({}): {}",
+                    exit_code, stderr
+                )));
+            }
+        }
+
+        // 等待客户端连接
+        let connection_timeout = config.connection_timeout.unwrap_or(30);
+        info!("等待 guest-verifier 连接 (超时: {}s)", connection_timeout);
+
+        if let Some(client_manager) = &self.client_manager {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(connection_timeout) {
+                let clients = client_manager.get_clients().await;
+                if !clients.is_empty() {
+                    info!("guest-verifier 已连接: {} 个客户端", clients.len());
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            warn!("等待 guest-verifier 连接超时");
+        }
+
+        Ok(())
+    }
+
+    /// 清理验证服务器
+    async fn cleanup_verification_server(&mut self) {
+        if let Some(handle) = self.verification_server_handle.take() {
+            handle.abort();
+            info!("验证服务器已停止");
+        }
+
+        self.verification_service = None;
+        self.client_manager = None;
+    }
+
     /// 执行单个步骤
     async fn execute_step(&mut self, step: &ScenarioStep, index: usize) -> Result<StepReport> {
         let start_time = Instant::now();
 
-        let step_timeout = step.timeout
+        let step_timeout = step
+            .timeout
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
+        // 如果需要验证，先注册期望事件
+        let verification_future = if step.verify && self.verification_service.is_some() {
+            self.create_verification_future(step, step_timeout)
+        } else {
+            None
+        };
+
+        // 执行动作
         let result = timeout(step_timeout, self.execute_action(&step.action, index)).await;
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -241,6 +700,29 @@ impl ScenarioRunner {
                 if let Some(name) = &step.name {
                     report.description = name.clone();
                 }
+
+                // 如果有验证任务，等待结果
+                if let Some(verify_task) = verification_future {
+                    match verify_task.await {
+                        Ok(Ok(verify_result)) => {
+                            report.verified = Some(verify_result.verified);
+                            report.verification_latency_ms = Some(verify_result.latency_ms);
+                            debug!(
+                                "验证结果: verified={}, latency={}ms",
+                                verify_result.verified, verify_result.latency_ms
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            warn!("验证服务错误: {}", e);
+                            report.verified = Some(false);
+                        }
+                        Err(e) => {
+                            warn!("验证任务失败: {}", e);
+                            report.verified = Some(false);
+                        }
+                    }
+                }
+
                 Ok(report)
             }
             Ok(Err(e)) => Err(e),
@@ -251,31 +733,71 @@ impl ScenarioRunner {
         }
     }
 
+    /// 创建验证等待任务
+    fn create_verification_future(
+        &self,
+        step: &ScenarioStep,
+        timeout_duration: Duration,
+    ) -> Option<
+        tokio::task::JoinHandle<
+            std::result::Result<atp_common::VerifyResult, verification_server::VerificationError>,
+        >,
+    > {
+        let verification_service = self.verification_service.as_ref()?.clone();
+
+        // 根据动作类型确定期望的事件
+        let (event_type, expected_name) = match &step.action {
+            Action::SendKey { key } => ("keyboard", key.to_uppercase()),
+            Action::SendText { text } => {
+                // 对于文本，我们验证第一个字符
+                let first_char = text.chars().next()?;
+                ("keyboard", first_char.to_uppercase().to_string())
+            }
+            _ => return None, // 其他动作暂不支持验证
+        };
+
+        // 从 ScenarioRunner 获取 VM ID，默认使用 "default"
+        let vm_id = self
+            .verification_vm_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let event_type_owned = event_type.to_string();
+
+        Some(tokio::spawn(async move {
+            verification_service
+                .expect_input(
+                    &vm_id,
+                    &event_type_owned,
+                    &expected_name,
+                    Some(1), // 期望按下事件
+                    Some(timeout_duration),
+                )
+                .await
+        }))
+    }
+
     /// 执行具体动作
     async fn execute_action(&mut self, action: &Action, index: usize) -> Result<StepReport> {
         match action {
-            Action::SendKey { key } => {
-                self.execute_send_key(key, index).await
-            }
-            Action::SendText { text } => {
-                self.execute_send_text(text, index).await
-            }
+            Action::SendKey { key } => self.execute_send_key(key, index).await,
+            Action::SendText { text } => self.execute_send_text(text, index).await,
             Action::MouseClick { x, y, button } => {
                 self.execute_mouse_click(*x, *y, button, index).await
             }
-            Action::ExecCommand { command } => {
-                self.execute_command(command, index).await
-            }
-            Action::Wait { duration } => {
-                self.execute_wait(*duration, index).await
-            }
+            Action::ExecCommand { command } => self.execute_command(command, index).await,
+            Action::Wait { duration } => self.execute_wait(*duration, index).await,
             Action::Custom { data } => {
                 warn!("自定义动作尚未完全实现: {:?}", data);
                 Ok(StepReport::success(index, "自定义动作（跳过）"))
             }
             // VDI 平台操作
-            Action::VdiCreateDeskPool { name, template_id, count } => {
-                self.execute_vdi_create_desk_pool(name, template_id, *count, index).await
+            Action::VdiCreateDeskPool {
+                name,
+                template_id,
+                count,
+            } => {
+                self.execute_vdi_create_desk_pool(name, template_id, *count, index)
+                    .await
             }
             Action::VdiEnableDeskPool { pool_id } => {
                 self.execute_vdi_enable_desk_pool(pool_id, index).await
@@ -305,11 +827,20 @@ impl ScenarioRunner {
                 self.execute_vdi_get_desk_pool_domains(pool_id, index).await
             }
             // 验证步骤
-            Action::VerifyDomainStatus { domain_id, expected_status, timeout_secs } => {
-                self.verify_domain_status(domain_id, expected_status, *timeout_secs, index).await
+            Action::VerifyDomainStatus {
+                domain_id,
+                expected_status,
+                timeout_secs,
+            } => {
+                self.verify_domain_status(domain_id, expected_status, *timeout_secs, index)
+                    .await
             }
-            Action::VerifyAllDomainsRunning { pool_id, timeout_secs } => {
-                self.verify_all_domains_running(pool_id, *timeout_secs, index).await
+            Action::VerifyAllDomainsRunning {
+                pool_id,
+                timeout_secs,
+            } => {
+                self.verify_all_domains_running(pool_id, *timeout_secs, index)
+                    .await
             }
             Action::VerifyCommandSuccess { timeout_secs } => {
                 self.verify_command_success(*timeout_secs, index).await
@@ -339,18 +870,16 @@ impl ScenarioRunner {
 
         // 使用 QMP 协议发送文本 (将文本拆分为按键序列)
         if let Some(qmp) = &mut self.qmp_protocol {
-            // 将文本转换为按键序列
-            let keys: Vec<&str> = text.chars()
-                .map(|c| {
-                    // 这里简化处理,实际需要完整的字符到 QKeyCode 映射
-                    match c {
-                        'a'..='z' | 'A'..='Z' | '0'..='9' => c.to_string().leak(),
-                        ' ' => "spc",
-                        '\n' => "ret",
-                        _ => "unknown", // 需要更完整的映射表
-                    }
-                })
-                .collect();
+            // 将文本转换为按键序列，使用静态映射表避免内存泄漏
+            let keys: Vec<&str> = text.chars().filter_map(|c| char_to_qkeycode(c)).collect();
+
+            if keys.is_empty() {
+                warn!("文本中没有可映射的字符: {}", text);
+                return Ok(StepReport::success(
+                    index,
+                    &format!("发送文本: {} (无可映射字符)", text),
+                ));
+            }
 
             qmp.send_keys(keys, Some(100))
                 .await
@@ -363,7 +892,13 @@ impl ScenarioRunner {
     }
 
     /// 执行鼠标点击
-    async fn execute_mouse_click(&mut self, x: i32, y: i32, button: &str, index: usize) -> Result<StepReport> {
+    async fn execute_mouse_click(
+        &mut self,
+        x: i32,
+        y: i32,
+        button: &str,
+        index: usize,
+    ) -> Result<StepReport> {
         info!("鼠标点击: ({}, {}) 按钮: {}", x, y, button);
 
         // 使用 SPICE 协议发送鼠标操作
@@ -380,7 +915,8 @@ impl ScenarioRunner {
             };
 
             // 首先移动鼠标到目标位置（使用绝对坐标）
-            spice.send_mouse_move(x as u32, y as u32, 0)
+            spice
+                .send_mouse_move(x as u32, y as u32, 0)
                 .await
                 .map_err(|e| ExecutorError::ProtocolError(format!("SPICE 鼠标移动失败: {}", e)))?;
 
@@ -388,7 +924,8 @@ impl ScenarioRunner {
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             // 发送鼠标点击（按下）
-            spice.send_mouse_click(mouse_button, true)
+            spice
+                .send_mouse_click(mouse_button, true)
                 .await
                 .map_err(|e| ExecutorError::ProtocolError(format!("SPICE 鼠标按下失败: {}", e)))?;
 
@@ -396,19 +933,25 @@ impl ScenarioRunner {
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             // 发送鼠标释放
-            spice.send_mouse_click(mouse_button, false)
+            spice
+                .send_mouse_click(mouse_button, false)
                 .await
                 .map_err(|e| ExecutorError::ProtocolError(format!("SPICE 鼠标释放失败: {}", e)))?;
 
-            Ok(StepReport::success(index, &format!("鼠标点击: ({}, {}) 按钮: {}", x, y, button)))
+            Ok(StepReport::success(
+                index,
+                &format!("鼠标点击: ({}, {}) 按钮: {}", x, y, button),
+            ))
         } else {
             // 如果 SPICE 未连接，尝试通过 QGA 执行脚本模拟鼠标操作（备用方案）
             if let Some(qga) = &self.qga_protocol {
                 warn!("SPICE 协议未初始化，尝试通过 QGA 执行鼠标脚本");
 
                 // 在 Linux 中可以使用 xdotool 模拟鼠标
-                let script = format!("DISPLAY=:0 xdotool mousemove {} {} click {}",
-                    x, y,
+                let script = format!(
+                    "DISPLAY=:0 xdotool mousemove {} {} click {}",
+                    x,
+                    y,
                     match button.to_lowercase().as_str() {
                         "left" => "1",
                         "middle" => "2",
@@ -417,9 +960,9 @@ impl ScenarioRunner {
                     }
                 );
 
-                let status = qga.exec_shell(&script)
-                    .await
-                    .map_err(|e| ExecutorError::ProtocolError(format!("QGA 执行鼠标脚本失败: {}", e)))?;
+                let status = qga.exec_shell(&script).await.map_err(|e| {
+                    ExecutorError::ProtocolError(format!("QGA 执行鼠标脚本失败: {}", e))
+                })?;
 
                 if let Some(exit_code) = status.exit_code {
                     if exit_code != 0 {
@@ -431,10 +974,13 @@ impl ScenarioRunner {
                     }
                 }
 
-                Ok(StepReport::success(index, &format!("鼠标点击: ({}, {}) [QGA/xdotool]", x, y)))
+                Ok(StepReport::success(
+                    index,
+                    &format!("鼠标点击: ({}, {}) [QGA/xdotool]", x, y),
+                ))
             } else {
                 Err(ExecutorError::ProtocolError(
-                    "SPICE 和 QGA 协议均未初始化，无法执行鼠标操作".to_string()
+                    "SPICE 和 QGA 协议均未初始化，无法执行鼠标操作".to_string(),
                 ))
             }
         }
@@ -446,14 +992,16 @@ impl ScenarioRunner {
 
         // 使用 QGA 协议执行命令
         if let Some(qga) = &self.qga_protocol {
-            let status = qga.exec_shell(command)
+            let status = qga
+                .exec_shell(command)
                 .await
                 .map_err(|e| ExecutorError::ProtocolError(format!("QGA exec_shell 失败: {}", e)))?;
 
             // 检查退出码
             if let Some(exit_code) = status.exit_code {
                 if exit_code != 0 {
-                    let stderr = status.decode_stderr()
+                    let stderr = status
+                        .decode_stderr()
                         .unwrap_or_else(|| "无错误输出".to_string());
 
                     return Ok(StepReport::failed(
@@ -465,7 +1013,8 @@ impl ScenarioRunner {
             }
 
             // 获取输出
-            let stdout = status.decode_stdout()
+            let stdout = status
+                .decode_stdout()
                 .unwrap_or_else(|| "无输出".to_string());
 
             let mut report = StepReport::success(index, &format!("执行命令: {}", command));
@@ -495,11 +1044,16 @@ impl ScenarioRunner {
         name: &str,
         template_id: &str,
         count: u32,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
-        info!("创建桌面池: {} (模板: {}, 数量: {})", name, template_id, count);
+        info!(
+            "创建桌面池: {} (模板: {}, 数量: {})",
+            name, template_id, count
+        );
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
         // 构造创建桌面池请求
@@ -507,12 +1061,13 @@ impl ScenarioRunner {
             name: name.to_string(),
             template_id: template_id.to_string(),
             count,
-            vcpu: 2,    // 默认值，可以从场景配置中获取
+            vcpu: 2,      // 默认值，可以从场景配置中获取
             memory: 2048, // 默认 2GB，可以从场景配置中获取
         };
 
         // 调用 VDI 平台 API 创建桌面池
-        vdi_client.desk_pool()
+        vdi_client
+            .desk_pool()
             .create(request)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("创建桌面池失败: {}", e)))?;
@@ -524,133 +1079,175 @@ impl ScenarioRunner {
     async fn execute_vdi_enable_desk_pool(
         &mut self,
         pool_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("启用桌面池: {}", pool_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.desk_pool()
+        vdi_client
+            .desk_pool()
             .enable(pool_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("启用桌面池失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("启用桌面池: {}", pool_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("启用桌面池: {}", pool_id),
+        ))
     }
 
     /// 执行 VDI 禁用桌面池
     async fn execute_vdi_disable_desk_pool(
         &mut self,
         pool_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("禁用桌面池: {}", pool_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.desk_pool()
+        vdi_client
+            .desk_pool()
             .disable(pool_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("禁用桌面池失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("禁用桌面池: {}", pool_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("禁用桌面池: {}", pool_id),
+        ))
     }
 
     /// 执行 VDI 删除桌面池
     async fn execute_vdi_delete_desk_pool(
         &mut self,
         pool_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("删除桌面池: {}", pool_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.desk_pool()
+        vdi_client
+            .desk_pool()
             .delete(pool_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("删除桌面池失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("删除桌面池: {}", pool_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("删除桌面池: {}", pool_id),
+        ))
     }
 
     /// 执行 VDI 启动虚拟机
     async fn execute_vdi_start_domain(
         &mut self,
         domain_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("启动虚拟机: {}", domain_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.domain()
+        vdi_client
+            .domain()
             .start(domain_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("启动虚拟机失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("启动虚拟机: {}", domain_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("启动虚拟机: {}", domain_id),
+        ))
     }
 
     /// 执行 VDI 关闭虚拟机
     async fn execute_vdi_shutdown_domain(
         &mut self,
         domain_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("关闭虚拟机: {}", domain_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.domain()
+        vdi_client
+            .domain()
             .shutdown(domain_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("关闭虚拟机失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("关闭虚拟机: {}", domain_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("关闭虚拟机: {}", domain_id),
+        ))
     }
 
     /// 执行 VDI 重启虚拟机
     async fn execute_vdi_reboot_domain(
         &mut self,
         domain_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("重启虚拟机: {}", domain_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.domain()
+        vdi_client
+            .domain()
             .reboot(domain_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("重启虚拟机失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("重启虚拟机: {}", domain_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("重启虚拟机: {}", domain_id),
+        ))
     }
 
     /// 执行 VDI 删除虚拟机
     async fn execute_vdi_delete_domain(
         &mut self,
         domain_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("删除虚拟机: {}", domain_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.domain()
+        vdi_client
+            .domain()
             .delete(domain_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("删除虚拟机失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("删除虚拟机: {}", domain_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("删除虚拟机: {}", domain_id),
+        ))
     }
 
     /// 执行 VDI 绑定用户
@@ -658,33 +1255,42 @@ impl ScenarioRunner {
         &mut self,
         domain_id: &str,
         user_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("绑定用户: 虚拟机={}, 用户={}", domain_id, user_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        vdi_client.domain()
+        vdi_client
+            .domain()
             .bind_user(domain_id, user_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("绑定用户失败: {}", e)))?;
 
-        Ok(StepReport::success(index, &format!("绑定用户: 虚拟机={}, 用户={}", domain_id, user_id)))
+        Ok(StepReport::success(
+            index,
+            &format!("绑定用户: 虚拟机={}, 用户={}", domain_id, user_id),
+        ))
     }
 
     /// 执行 VDI 获取桌面池虚拟机列表
     async fn execute_vdi_get_desk_pool_domains(
         &mut self,
         pool_id: &str,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("获取桌面池虚拟机列表: {}", pool_id);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
-        let domains = vdi_client.desk_pool()
+        let domains = vdi_client
+            .desk_pool()
             .list_domains(pool_id)
             .await
             .map_err(|e| ExecutorError::TransportError(format!("获取虚拟机列表失败: {}", e)))?;
@@ -704,7 +1310,7 @@ impl ScenarioRunner {
         domain_id: &str,
         expected_status: &str,
         timeout_secs: Option<u64>,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("验证虚拟机状态: {} 应为 {}", domain_id, expected_status);
 
@@ -714,34 +1320,39 @@ impl ScenarioRunner {
 
         // 获取第一个可用主机
         let hosts = self.transport_manager.list_hosts().await;
-        let host_id = hosts.first()
+        let host_id = hosts
+            .first()
             .ok_or_else(|| ExecutorError::ConfigError("无可用主机".to_string()))?
             .clone();
 
         // 通过 libvirt 查询虚拟机状态
         let result = timeout(timeout_duration, async {
-            let domain = self.transport_manager
-                .execute_on_host(&host_id, |conn| async move {
-                    conn.get_domain(domain_id).await
-                })
+            let domain = self
+                .transport_manager
+                .execute_on_host(
+                    &host_id,
+                    |conn| async move { conn.get_domain(domain_id).await },
+                )
                 .await
                 .map_err(|e| ExecutorError::TransportError(e.to_string()))?;
 
-            let state = domain.get_state()
+            let state = domain
+                .get_state()
                 .map_err(|e| ExecutorError::TransportError(e.to_string()))?;
 
             let actual_status = format!("{:?}", state.0).to_lowercase();
             let expected_lower = expected_status.to_lowercase();
 
             if actual_status.contains(&expected_lower) || expected_lower.contains(&actual_status) {
-                Ok(StepReport::success(index, &format!(
-                    "虚拟机状态验证成功: {} = {}", domain_id, expected_status
-                )))
+                Ok(StepReport::success(
+                    index,
+                    &format!("虚拟机状态验证成功: {} = {}", domain_id, expected_status),
+                ))
             } else {
                 Ok(StepReport::failed(
                     index,
                     &format!("虚拟机状态验证失败: {}", domain_id),
-                    &format!("期望: {}, 实际: {}", expected_status, actual_status)
+                    &format!("期望: {}, 实际: {}", expected_status, actual_status),
                 ))
             }
         })
@@ -762,7 +1373,7 @@ impl ScenarioRunner {
         &mut self,
         pool_id: &str,
         timeout_secs: Option<u64>,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("验证所有虚拟机运行中: 桌面池 {}", pool_id);
 
@@ -770,12 +1381,15 @@ impl ScenarioRunner {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let vdi_client = self.vdi_client.as_ref()
+        let vdi_client = self
+            .vdi_client
+            .as_ref()
             .ok_or_else(|| ExecutorError::ConfigError("VDI 客户端未初始化".to_string()))?;
 
         let result = timeout(timeout_duration, async {
             // 获取桌面池的所有虚拟机
-            let domains = vdi_client.desk_pool()
+            let domains = vdi_client
+                .desk_pool()
                 .list_domains(pool_id)
                 .await
                 .map_err(|e| ExecutorError::TransportError(format!("获取虚拟机列表失败: {}", e)))?;
@@ -793,14 +1407,19 @@ impl ScenarioRunner {
             }
 
             if all_running {
-                Ok(StepReport::success(index, &format!(
-                    "所有虚拟机运行中: 桌面池 {} ({} 台)", pool_id, domains.len()
-                )))
+                Ok(StepReport::success(
+                    index,
+                    &format!(
+                        "所有虚拟机运行中: 桌面池 {} ({} 台)",
+                        pool_id,
+                        domains.len()
+                    ),
+                ))
             } else {
                 Ok(StepReport::failed(
                     index,
                     &format!("验证所有虚拟机运行中: 桌面池 {}", pool_id),
-                    &format!("以下虚拟机未运行: {:?}", failed_domains)
+                    &format!("以下虚拟机未运行: {:?}", failed_domains),
                 ))
             }
         })
@@ -820,7 +1439,7 @@ impl ScenarioRunner {
     async fn verify_command_success(
         &mut self,
         _timeout_secs: Option<u64>,
-        index: usize
+        index: usize,
     ) -> Result<StepReport> {
         info!("验证命令执行成功");
 
@@ -867,11 +1486,10 @@ impl ScenarioRunner {
         };
 
         // 保存报告
-        let report_id = storage
-            .reports()
-            .create(&test_report)
-            .await
-            .map_err(|e| ExecutorError::DatabaseError(format!("Failed to save report: {}", e)))?;
+        let report_id =
+            storage.reports().create(&test_report).await.map_err(|e| {
+                ExecutorError::DatabaseError(format!("Failed to save report: {}", e))
+            })?;
 
         // 保存步骤
         let steps: Vec<ExecutionStepRecord> = report
@@ -901,6 +1519,45 @@ impl ScenarioRunner {
 
         info!("测试报告已保存到数据库, ID: {}", report_id);
         Ok(report_id)
+    }
+}
+
+/// 多目标执行报告
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiTargetReport {
+    /// 场景名称
+    pub scenario_name: String,
+
+    /// 总目标数
+    pub total_targets: usize,
+
+    /// 成功数
+    pub successful: usize,
+
+    /// 失败数
+    pub failed: usize,
+
+    /// 总耗时（毫秒）
+    pub duration_ms: u64,
+
+    /// 各目标的执行报告
+    pub reports: Vec<ExecutionReport>,
+}
+
+impl MultiTargetReport {
+    /// 是否全部成功
+    pub fn all_passed(&self) -> bool {
+        self.failed == 0 && self.successful > 0
+    }
+
+    /// 导出为 JSON
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// 导出为 YAML
+    pub fn to_yaml(&self) -> serde_yaml::Result<String> {
+        serde_yaml::to_string(self)
     }
 }
 
@@ -996,6 +1653,14 @@ pub struct StepReport {
 
     /// 输出内容
     pub output: Option<String>,
+
+    /// 是否已验证 (仅当 verify=true 时有值)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+
+    /// 验证延迟（毫秒）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_latency_ms: Option<u64>,
 }
 
 impl StepReport {
@@ -1007,6 +1672,8 @@ impl StepReport {
             error: None,
             duration_ms: 0,
             output: None,
+            verified: None,
+            verification_latency_ms: None,
         }
     }
 
@@ -1018,7 +1685,16 @@ impl StepReport {
             error: Some(error.to_string()),
             duration_ms: 0,
             output: None,
+            verified: None,
+            verification_latency_ms: None,
         }
+    }
+
+    /// 设置验证结果
+    pub fn with_verification(mut self, verified: bool, latency_ms: u64) -> Self {
+        self.verified = Some(verified);
+        self.verification_latency_ms = Some(latency_ms);
+        self
     }
 }
 
@@ -1028,4 +1704,314 @@ pub enum StepStatus {
     Success,
     Failed,
     Skipped,
+}
+
+/// 将字符转换为 QKeyCode 字符串
+///
+/// 返回 QEMU QKeyCode 名称，用于 QMP send-key 命令。
+/// 使用静态字符串避免内存分配和泄漏。
+///
+/// 参考: https://github.com/qemu/qemu/blob/master/include/ui/input-keymap.h
+fn char_to_qkeycode(c: char) -> Option<&'static str> {
+    match c {
+        // 小写字母
+        'a' => Some("a"),
+        'b' => Some("b"),
+        'c' => Some("c"),
+        'd' => Some("d"),
+        'e' => Some("e"),
+        'f' => Some("f"),
+        'g' => Some("g"),
+        'h' => Some("h"),
+        'i' => Some("i"),
+        'j' => Some("j"),
+        'k' => Some("k"),
+        'l' => Some("l"),
+        'm' => Some("m"),
+        'n' => Some("n"),
+        'o' => Some("o"),
+        'p' => Some("p"),
+        'q' => Some("q"),
+        'r' => Some("r"),
+        's' => Some("s"),
+        't' => Some("t"),
+        'u' => Some("u"),
+        'v' => Some("v"),
+        'w' => Some("w"),
+        'x' => Some("x"),
+        'y' => Some("y"),
+        'z' => Some("z"),
+
+        // 大写字母 (需要 Shift，但 QMP 使用相同的 keycode)
+        'A' => Some("a"),
+        'B' => Some("b"),
+        'C' => Some("c"),
+        'D' => Some("d"),
+        'E' => Some("e"),
+        'F' => Some("f"),
+        'G' => Some("g"),
+        'H' => Some("h"),
+        'I' => Some("i"),
+        'J' => Some("j"),
+        'K' => Some("k"),
+        'L' => Some("l"),
+        'M' => Some("m"),
+        'N' => Some("n"),
+        'O' => Some("o"),
+        'P' => Some("p"),
+        'Q' => Some("q"),
+        'R' => Some("r"),
+        'S' => Some("s"),
+        'T' => Some("t"),
+        'U' => Some("u"),
+        'V' => Some("v"),
+        'W' => Some("w"),
+        'X' => Some("x"),
+        'Y' => Some("y"),
+        'Z' => Some("z"),
+
+        // 数字
+        '0' => Some("0"),
+        '1' => Some("1"),
+        '2' => Some("2"),
+        '3' => Some("3"),
+        '4' => Some("4"),
+        '5' => Some("5"),
+        '6' => Some("6"),
+        '7' => Some("7"),
+        '8' => Some("8"),
+        '9' => Some("9"),
+
+        // 空白字符
+        ' ' => Some("spc"),
+        '\t' => Some("tab"),
+        '\n' => Some("ret"),
+        '\r' => Some("ret"),
+
+        // 标点符号 (美式键盘布局)
+        '`' => Some("grave_accent"),
+        '~' => Some("grave_accent"), // Shift + `
+        '-' => Some("minus"),
+        '_' => Some("minus"), // Shift + -
+        '=' => Some("equal"),
+        '+' => Some("equal"), // Shift + =
+        '[' => Some("bracket_left"),
+        '{' => Some("bracket_left"), // Shift + [
+        ']' => Some("bracket_right"),
+        '}' => Some("bracket_right"), // Shift + ]
+        '\\' => Some("backslash"),
+        '|' => Some("backslash"), // Shift + \
+        ';' => Some("semicolon"),
+        ':' => Some("semicolon"), // Shift + ;
+        '\'' => Some("apostrophe"),
+        '"' => Some("apostrophe"), // Shift + '
+        ',' => Some("comma"),
+        '<' => Some("comma"), // Shift + ,
+        '.' => Some("dot"),
+        '>' => Some("dot"), // Shift + .
+        '/' => Some("slash"),
+        '?' => Some("slash"), // Shift + /
+
+        // Shift + 数字产生的符号
+        '!' => Some("1"), // Shift + 1
+        '@' => Some("2"), // Shift + 2
+        '#' => Some("3"), // Shift + 3
+        '$' => Some("4"), // Shift + 4
+        '%' => Some("5"), // Shift + 5
+        '^' => Some("6"), // Shift + 6
+        '&' => Some("7"), // Shift + 7
+        '*' => Some("8"), // Shift + 8
+        '(' => Some("9"), // Shift + 9
+        ')' => Some("0"), // Shift + 0
+
+        // 不支持的字符
+        _ => {
+            debug!("未映射的字符: {:?} (U+{:04X})", c, c as u32);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_char_to_qkeycode_lowercase() {
+        assert_eq!(char_to_qkeycode('a'), Some("a"));
+        assert_eq!(char_to_qkeycode('m'), Some("m"));
+        assert_eq!(char_to_qkeycode('z'), Some("z"));
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_uppercase() {
+        // 大写字母映射到相同的 keycode
+        assert_eq!(char_to_qkeycode('A'), Some("a"));
+        assert_eq!(char_to_qkeycode('M'), Some("m"));
+        assert_eq!(char_to_qkeycode('Z'), Some("z"));
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_digits() {
+        assert_eq!(char_to_qkeycode('0'), Some("0"));
+        assert_eq!(char_to_qkeycode('5'), Some("5"));
+        assert_eq!(char_to_qkeycode('9'), Some("9"));
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_whitespace() {
+        assert_eq!(char_to_qkeycode(' '), Some("spc"));
+        assert_eq!(char_to_qkeycode('\t'), Some("tab"));
+        assert_eq!(char_to_qkeycode('\n'), Some("ret"));
+        assert_eq!(char_to_qkeycode('\r'), Some("ret"));
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_punctuation() {
+        assert_eq!(char_to_qkeycode('`'), Some("grave_accent"));
+        assert_eq!(char_to_qkeycode('-'), Some("minus"));
+        assert_eq!(char_to_qkeycode('='), Some("equal"));
+        assert_eq!(char_to_qkeycode('['), Some("bracket_left"));
+        assert_eq!(char_to_qkeycode(']'), Some("bracket_right"));
+        assert_eq!(char_to_qkeycode('\\'), Some("backslash"));
+        assert_eq!(char_to_qkeycode(';'), Some("semicolon"));
+        assert_eq!(char_to_qkeycode('\''), Some("apostrophe"));
+        assert_eq!(char_to_qkeycode(','), Some("comma"));
+        assert_eq!(char_to_qkeycode('.'), Some("dot"));
+        assert_eq!(char_to_qkeycode('/'), Some("slash"));
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_shift_symbols() {
+        // Shift + 数字产生的符号
+        assert_eq!(char_to_qkeycode('!'), Some("1"));
+        assert_eq!(char_to_qkeycode('@'), Some("2"));
+        assert_eq!(char_to_qkeycode('#'), Some("3"));
+        assert_eq!(char_to_qkeycode('$'), Some("4"));
+        assert_eq!(char_to_qkeycode('%'), Some("5"));
+        assert_eq!(char_to_qkeycode('^'), Some("6"));
+        assert_eq!(char_to_qkeycode('&'), Some("7"));
+        assert_eq!(char_to_qkeycode('*'), Some("8"));
+        assert_eq!(char_to_qkeycode('('), Some("9"));
+        assert_eq!(char_to_qkeycode(')'), Some("0"));
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_shift_punctuation() {
+        // Shift + 标点产生的符号
+        assert_eq!(char_to_qkeycode('~'), Some("grave_accent"));
+        assert_eq!(char_to_qkeycode('_'), Some("minus"));
+        assert_eq!(char_to_qkeycode('+'), Some("equal"));
+        assert_eq!(char_to_qkeycode('{'), Some("bracket_left"));
+        assert_eq!(char_to_qkeycode('}'), Some("bracket_right"));
+        assert_eq!(char_to_qkeycode('|'), Some("backslash"));
+        assert_eq!(char_to_qkeycode(':'), Some("semicolon"));
+        assert_eq!(char_to_qkeycode('"'), Some("apostrophe"));
+        assert_eq!(char_to_qkeycode('<'), Some("comma"));
+        assert_eq!(char_to_qkeycode('>'), Some("dot"));
+        assert_eq!(char_to_qkeycode('?'), Some("slash"));
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_unsupported() {
+        // 不支持的字符返回 None
+        assert_eq!(char_to_qkeycode('中'), None);
+        assert_eq!(char_to_qkeycode('日'), None);
+        assert_eq!(char_to_qkeycode('€'), None);
+        assert_eq!(char_to_qkeycode('£'), None);
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_all_lowercase_letters() {
+        for c in 'a'..='z' {
+            let result = char_to_qkeycode(c);
+            assert!(result.is_some(), "Letter '{}' should be mapped", c);
+            assert_eq!(result.unwrap(), c.to_string().as_str());
+        }
+    }
+
+    #[test]
+    fn test_char_to_qkeycode_all_digits() {
+        for c in '0'..='9' {
+            let result = char_to_qkeycode(c);
+            assert!(result.is_some(), "Digit '{}' should be mapped", c);
+            assert_eq!(result.unwrap(), c.to_string().as_str());
+        }
+    }
+
+    #[test]
+    fn test_step_report_success() {
+        let report = StepReport::success(0, "Test step");
+        assert_eq!(report.step_index, 0);
+        assert_eq!(report.description, "Test step");
+        assert_eq!(report.status, StepStatus::Success);
+        assert!(report.error.is_none());
+    }
+
+    #[test]
+    fn test_step_report_failed() {
+        let report = StepReport::failed(1, "Failed step", "Error message");
+        assert_eq!(report.step_index, 1);
+        assert_eq!(report.description, "Failed step");
+        assert_eq!(report.status, StepStatus::Failed);
+        assert_eq!(report.error, Some("Error message".to_string()));
+    }
+
+    #[test]
+    fn test_step_report_with_verification() {
+        let report = StepReport::success(0, "Test").with_verification(true, 50);
+        assert_eq!(report.verified, Some(true));
+        assert_eq!(report.verification_latency_ms, Some(50));
+    }
+
+    #[test]
+    fn test_execution_report_new() {
+        let report = ExecutionReport::new("Test Scenario");
+        assert_eq!(report.scenario_name, "Test Scenario");
+        assert!(report.passed);
+        assert_eq!(report.steps_executed, 0);
+        assert_eq!(report.passed_count, 0);
+        assert_eq!(report.failed_count, 0);
+    }
+
+    #[test]
+    fn test_execution_report_add_step() {
+        let mut report = ExecutionReport::new("Test");
+
+        report.add_step(StepReport::success(0, "Step 1"));
+        assert_eq!(report.steps_executed, 1);
+        assert_eq!(report.passed_count, 1);
+        assert!(report.passed);
+
+        report.add_step(StepReport::failed(1, "Step 2", "Error"));
+        assert_eq!(report.steps_executed, 2);
+        assert_eq!(report.failed_count, 1);
+        assert!(!report.passed);
+    }
+
+    #[test]
+    fn test_multi_target_report_all_passed() {
+        let report = MultiTargetReport {
+            scenario_name: "Test".to_string(),
+            total_targets: 3,
+            successful: 3,
+            failed: 0,
+            duration_ms: 1000,
+            reports: vec![],
+        };
+        assert!(report.all_passed());
+    }
+
+    #[test]
+    fn test_multi_target_report_some_failed() {
+        let report = MultiTargetReport {
+            scenario_name: "Test".to_string(),
+            total_targets: 3,
+            successful: 2,
+            failed: 1,
+            duration_ms: 1000,
+            reports: vec![],
+        };
+        assert!(!report.all_passed());
+    }
 }

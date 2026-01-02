@@ -20,6 +20,8 @@ atp-transport = { path = "../transport" }
 atp-protocol = { path = "../protocol" }
 atp-storage = { path = "../storage" }  # 数据库支持
 atp-vdiplatform = { path = "../vdiplatform" }  # VDI 平台集成
+verification-server = { path = "../verification-server" }  # 输入验证服务
+atp-common = { path = "../../atp-common" }  # 共享类型
 
 # 时间处理 (用于报告时间戳)
 chrono = { workspace = true }
@@ -42,6 +44,9 @@ reqwest = { version = "0.11", features = ["json"] }
 
 # MD5 加密 (用于 VDI 密码加密)
 md5 = "0.7"
+
+# 正则表达式 (用于目标选择器)
+regex = "1.10"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

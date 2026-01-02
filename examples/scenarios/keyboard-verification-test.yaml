@@ -1,0 +1,68 @@
+name: "键盘输入验证测试"
+description: "测试带验证的键盘输入功能 - 验证 Guest Agent 上报的按键事件"
+
+# 目标虚拟机 - 支持多种选择方式
+# ===================================
+# 方式1: 单个虚拟机 (向后兼容)
+# target_domain: "test-vm"
+
+# 方式2: 通配符匹配
+# target_domains: "test-*"
+
+# 方式3: 匹配所有虚拟机
+# target_domains:
+#   mode: all
+
+# 方式4: 高级选择器 (当前使用)
+target_domains:
+  mode: pattern
+  pattern: "test-*"
+  exclude:
+    - "test-template"
+    - "test-backup-*"
+  limit: 10
+
+# 目标主机
+target_host: "host1"
+
+# 并行执行配置 (可选)
+parallel:
+  enabled: false        # 串行执行
+  max_concurrent: 5     # 最大并发数
+  on_failure: continue  # 失败策略: continue/stop_all/fail_fast
+
+# 验证服务器配置 (嵌入式启动)
+verification:
+  ws_addr: "0.0.0.0:8765"
+  tcp_addr: "0.0.0.0:8766"
+  guest_verifier_path: "/usr/local/bin/verifier-agent"
+  connection_timeout: 30
+
+tags: ["keyboard", "verification", "integration"]
+
+steps:
+  - name: "发送按键 'a' (带验证)"
+    action:
+      type: send_key
+      key: "a"
+    timeout: 10
+    verify: true
+
+  - name: "发送按键 Enter (带验证)"
+    action:
+      type: send_key
+      key: "ret"
+    timeout: 10
+    verify: true
+
+  - name: "发送按键 'b' (不验证)"
+    action:
+      type: send_key
+      key: "b"
+    timeout: 5
+    verify: false
+
+  - name: "等待 1 秒"
+    action:
+      type: wait
+      duration: 1

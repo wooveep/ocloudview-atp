@@ -38,9 +38,10 @@ impl StorageManager {
         info!("Connecting to database at: {}", path.display());
 
         // 创建连接池
+        // 使用 ?mode=rwc 确保数据库文件不存在时自动创建
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&format!("sqlite://{}", path.display()))
+            .connect(&format!("sqlite://{}?mode=rwc", path.display()))
             .await
             .map_err(|e| StorageError::ConnectionError(e.to_string()))?;
 

@@ -161,6 +161,15 @@ async fn run_scenario(file: &str) -> Result<()> {
                 println!("   错误: {}", error.red());
             }
 
+            // 显示验证结果
+            if let Some(verified) = step.verified {
+                let verify_icon = if verified { "✓".green() } else { "✗".red() };
+                let latency = step.verification_latency_ms
+                    .map(|ms| format!(" ({}ms)", ms))
+                    .unwrap_or_default();
+                println!("   验证: {}{}", verify_icon, latency.bright_black());
+            }
+
             println!("   耗时: {} ms", step.duration_ms.to_string().bright_black());
             println!();
         }

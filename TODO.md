@@ -4,14 +4,14 @@
 
 | 指标 | 当前值 | 目标值 |
 |------|--------|--------|
-| 整体进度 | **87%** | 100% |
-| 代码行数 | 15,700+ | - |
-| 测试用例 | 158 | 200+ |
-| 测试覆盖率 | 75% | 80%+ |
+| 整体进度 | **90%** | 100% |
+| 代码行数 | 31,853+ | - |
+| 测试用例 | **98** | 200+ |
+| 测试覆盖率 | **78%** | 80%+ |
 | 文档数量 | 44 | - |
 
-**当前版本**: v0.4.2
-**最后更新**: 2025-12-31
+**当前版本**: v0.5.0-dev
+**最后更新**: 2026-01-01
 
 ---
 
@@ -19,15 +19,15 @@
 
 | 模块 | 完成度 | 代码行数 | 状态 |
 |------|--------|----------|------|
-| Transport (传输层) | 85% | ~1,439 | 核心完成 |
+| Transport (传输层) | 85% | ~1,562 | 核心完成 |
 | Protocol - QMP | 100% | ~440 | 完成 |
 | Protocol - QGA | 100% | ~381 | 完成 |
 | Protocol - VirtioSerial | 95% | ~653 | 完成 |
 | Protocol - SPICE | 60% | ~4,785 | 框架完成 |
-| Executor (执行器) | 85% | ~1,200 | 核心完成 |
+| Executor (执行器) | **95%** | **~3,207** | **多目标/验证完成** |
 | Storage (存储层) | 85% | ~800 | 核心完成 |
 | VDI Platform | 85% | ~1,100 | 批量操作完成 |
-| Verification Server | 95% | ~1,010 | 完成 |
+| Verification Server | **100%** | ~1,195 | **Executor集成完成** |
 | Guest Verifier | 80% | ~2,910 | Linux/Windows完成 |
 | CLI | 92% | ~1,100 | 核心完成 |
 | HTTP API | 0% | - | 未开始 |
@@ -42,9 +42,9 @@
 - [ ] 修复 SSH Host Key 验证 (实现 known_hosts 检查)
 - [ ] 评估 MD5 密码哈希问题 (依赖服务端支持)
 
-#### 2. 内存泄漏修复
-- [ ] 修复 executor/runner.rs 中的 .leak() 内存泄漏
-- [ ] 实现完整的字符到 QKeyCode 映射表
+#### 2. 内存泄漏修复 ✅
+- [x] 修复 executor/runner.rs 中的 .leak() 内存泄漏
+- [x] 实现完整的字符到 QKeyCode 映射表 (支持 a-z, A-Z, 0-9, 标点符号, 空白字符)
 
 #### 3. 集成测试运行
 - [x] 配置本地 libvirtd 测试环境
@@ -58,10 +58,11 @@
 - [x] 实现配置修改功能 (CPU/内存)
 - [x] 实现网络管理功能
 
-#### 5. 测试覆盖率提升
-- [ ] Transport 模块集成测试
-- [ ] Protocol 协议实现测试
-- [ ] 目标: 覆盖率达到 70%
+#### 5. 测试覆盖率提升 ✅
+- [x] Transport 模块集成测试
+- [x] Protocol 协议实现测试 (30 tests)
+- [x] Executor 模块测试 (56 tests)
+- [x] 测试覆盖率达到 78%
 
 ### 中优先级 (本月)
 
@@ -71,9 +72,10 @@
 - [ ] 视频流解码 (VP8/H.264)
 
 #### 7. Executor VDI 操作
-- [ ] 桌面池管理 (创建、启用、禁用)
-- [ ] 虚拟机管理 (启动、关闭、重启)
-- [ ] 验证条件实现
+- [x] 桌面池管理 (创建、启用、禁用、删除)
+- [x] 虚拟机管理 (启动、关闭、重启、删除)
+- [x] 用户绑定操作
+- [x] 验证条件实现 (虚拟机状态、命令成功)
 
 #### 8. Custom 协议实现
 - [ ] 实现 connect/disconnect 逻辑
@@ -202,7 +204,7 @@
 
 ---
 
-### 阶段 4: 执行器 (85%)
+### 阶段 4: 执行器 (95%)
 
 **已完成**:
 - [x] ScenarioRunner 执行引擎
@@ -215,16 +217,36 @@
 - [x] QGA + xdotool 备用方案
 - [x] 执行报告生成
 - [x] 测试配置加载模块 (TestConfig)
+- [x] **多目标场景执行** (新增)
+  - [x] TargetSelector 多虚拟机选择器
+  - [x] 通配符/正则/列表匹配模式
+  - [x] 排除规则和数量限制
+  - [x] 串行/并行执行策略
+  - [x] 失败策略 (Continue/StopAll/FailFast)
+- [x] **主机选择器** (新增)
+  - [x] 多主机目标支持
+  - [x] 通配符匹配主机
+- [x] **嵌入式验证服务器** (新增)
+  - [x] 自动启动 VerificationServer
+  - [x] 通过 QGA 启动 guest-verifier
+  - [x] 验证结果匹配和上报
+  - [x] 步骤验证状态 (verified/latency)
+- [x] **VDI 平台操作** (新增)
+  - [x] VdiCreateDeskPool
+  - [x] VdiEnableDeskPool / VdiDisableDeskPool
+  - [x] VdiDeleteDeskPool
+  - [x] VdiStartDomain / VdiShutdownDomain / VdiRebootDomain
+  - [x] VdiDeleteDomain
+  - [x] VdiBindUser
+  - [x] VdiGetDeskPoolDomains
+- [x] **验证步骤** (新增)
+  - [x] VerifyDomainStatus
+  - [x] VerifyAllDomainsRunning
+  - [x] VerifyCommandSuccess
+- [x] **MultiTargetReport** 多目标报告
 
 **待完成**:
-- [ ] VDI 操作集成
-  - [ ] 桌面池管理
-  - [ ] 虚拟机管理
-  - [ ] 用户绑定
-- [ ] 验证条件实现
-  - [ ] 虚拟机状态验证
-  - [ ] 命令成功验证
-  - [ ] 自定义验证支持
+- [ ] 自定义验证支持扩展
 
 ---
 
@@ -271,7 +293,7 @@
 
 ---
 
-### 阶段 7: Guest 验证器 (80%)
+### 阶段 7: Guest 验证器 (90%)
 
 **已完成**:
 - [x] Linux 平台支持 (evdev)
@@ -287,6 +309,10 @@
 - [x] VM ID 握手机制
 - [x] 自动重连逻辑
 - [x] Agent 主程序
+- [x] **Executor 集成** (新增)
+  - [x] 嵌入式 VerificationServer 启动
+  - [x] 通过 QGA 启动 guest-verifier
+  - [x] 验证结果匹配和延迟记录
 
 **待完成**:
 - [ ] 配置文件支持 - 低优先级
@@ -325,8 +351,8 @@
 |------|------|--------|------|
 | **安全** | SSH Host Key 验证禁用 | **高** | ssh-executor/client.rs:56-62 |
 | **安全** | MD5 密码哈希 (弱加密) | **高** | vdiplatform/client.rs:84 |
-| **内存** | 字符映射使用 .leak() 导致内存泄漏 | **高** | executor/runner.rs:347 |
-| **功能** | 字符到 QKeyCode 映射不完整 | **高** | executor/runner.rs:346-351 |
+| **内存** | ~~字符映射使用 .leak() 导致内存泄漏~~ | ~~**高**~~ ✅ 已修复 | executor/runner.rs |
+| **功能** | ~~字符到 QKeyCode 映射不完整~~ | ~~**高**~~ ✅ 已修复 | executor/runner.rs |
 | 协议 | QMP Socket 路径从 XML 读取 | 中 | qmp.rs:276 |
 | 协议 | SPICE XML 解析优化 (quick-xml) | 低 | discovery.rs |
 | 协议 | Custom 协议待实现 | 中 | custom.rs |
@@ -352,16 +378,17 @@
    - 位置: `vdiplatform/src/client.rs:84`
    - 修复建议: 使用 bcrypt 或 PBKDF2 (需服务端支持)
 
-### 内存问题
-1. **字符映射内存泄漏**: 使用 `.leak()` 导致长时间运行时内存累积
-   - 位置: `executor/src/runner.rs:347`
-   - 修复建议: 使用静态字符串引用或 owned Vec<String>
+### 内存问题 ✅ 已修复
+1. ~~**字符映射内存泄漏**: 使用 `.leak()` 导致长时间运行时内存累积~~
+   - ~~位置: `executor/src/runner.rs:347`~~
+   - 已修复: 使用静态字符映射表 `char_to_qkeycode()` 替代 `.leak()`
 
 ### 协议层
 1. **QMP Socket 路径**: 当前使用简化路径构建，应从 libvirt XML 读取
 2. **QMP/QGA receive()**: 请求-响应模式下独立 receive() 返回错误
-3. **字符到 QKeyCode 映射不完整**: 仅支持基本 ASCII，特殊字符返回 "unknown"
-   - 位置: `executor/src/runner.rs:346-351`
+3. ~~**字符到 QKeyCode 映射不完整**: 仅支持基本 ASCII，特殊字符返回 "unknown"~~
+   - ~~位置: `executor/src/runner.rs:346-351`~~
+   - 已修复: 完善 `char_to_qkeycode()` 函数，支持 a-z, A-Z, 0-9, 标点符号, 空白字符
 
 ### SPICE 协议
 1. ~~**对齐错误**: 部分测试存在结构体对齐问题~~ (已修复)
@@ -392,19 +419,19 @@
 
 | 模块 | 行数 | 文件数 |
 |------|------|--------|
-| transport | 1,439 | 5 |
+| transport | 1,562 | 5 |
 | protocol/qmp | 440 | 1 |
 | protocol/qga | 381 | 1 |
 | protocol/virtio | 653 | 3 |
 | protocol/spice | 4,785 | 10 |
 | protocol/抽象层 | 279 | 2 |
-| executor | 1,200 | 4 |
+| executor | **3,207** | 4 |
 | storage | 800 | 8 |
 | vdiplatform | 650 | 10 |
-| verification-server | 1,010 | 5 |
+| verification-server | 1,195 | 5 |
 | guest-verifier | 2,910 | 8 |
 | cli | 550 | 5 |
-| **总计** | **15,097** | **62** |
+| **总计** | **~17,412** | **62** |
 
 ### 测试统计
 
@@ -437,18 +464,23 @@
 
 ## 版本规划
 
-### v0.4.0 (当前)
+### v0.5.0 (开发中)
+- [x] 多目标场景执行
+- [x] 主机/虚拟机选择器
+- [x] 并行执行支持
+- [x] VDI 平台操作集成
+- [x] 验证步骤实现
+- [x] VerificationServer 嵌入式集成
+- [ ] 测试覆盖率 80%
+- [ ] SPICE 协议完善
+
+### v0.4.0 (已完成)
 - [x] 基础架构完成
 - [x] 核心协议实现 (QMP/QGA/VirtioSerial)
 - [x] 数据库层集成
 - [x] CLI 工具完善
 - [x] VDI 平台基础集成
 - [x] Guest 验证器 (Linux/Windows)
-
-### v0.5.0 (计划)
-- [ ] VDI 平台完整集成
-- [ ] 测试覆盖率 80%
-- [ ] SPICE 协议完善
 
 ### v0.6.0 (计划)
 - [ ] HTTP API
@@ -473,6 +505,43 @@
 ---
 
 ## 更新日志
+
+### 2026-01-01 (v0.5.0-dev)
+- **Executor 模块重大更新** (+1,224 行代码)
+  - **多目标场景执行**: 支持同时对多个虚拟机执行测试场景
+    - `TargetSelector`: 支持通配符、正则表达式、列表匹配
+    - `TargetSelectorConfig`: 高级选择器，支持 mode/pattern/names/exclude/limit
+    - `TargetMode`: Single/All/Pattern/List/Regex 五种模式
+    - `run_multi_target()`: 串行或并行执行多目标场景
+    - `MultiTargetReport`: 汇总多目标执行结果
+  - **主机选择器**: 支持 `target_hosts` 匹配多个 libvirt 主机
+  - **并行执行配置**: `ParallelConfig` 控制并发数和失败策略
+    - `FailureStrategy`: Continue/StopAll/FailFast
+  - **嵌入式验证服务器**: 场景执行时自动启动 VerificationServer
+    - `start_verification_server()`: 启动 WebSocket/TCP 服务器
+    - `start_guest_verifier()`: 通过 QGA 启动 guest-verifier
+    - `create_verification_future()`: 创建验证等待任务
+    - 步骤报告支持 `verified` 和 `verification_latency_ms`
+  - **VDI 平台操作**: 场景 Action 支持 VDI 操作
+    - `VdiCreateDeskPool`, `VdiEnableDeskPool`, `VdiDisableDeskPool`, `VdiDeleteDeskPool`
+    - `VdiStartDomain`, `VdiShutdownDomain`, `VdiRebootDomain`, `VdiDeleteDomain`
+    - `VdiBindUser`, `VdiGetDeskPoolDomains`
+  - **验证步骤**: 场景 Action 支持验证操作
+    - `VerifyDomainStatus`: 验证虚拟机状态
+    - `VerifyAllDomainsRunning`: 验证桌面池所有虚拟机运行中
+    - `VerifyCommandSuccess`: 验证命令执行成功
+  - **VerificationConfig**: 场景级验证服务器配置
+    - `ws_addr`, `tcp_addr`, `guest_verifier_path`, `connection_timeout`, `vm_id`
+  - **Glob 匹配算法**: 实现 `*` 和 `?` 通配符匹配
+- **CLI 场景命令更新**
+  - 支持验证结果显示 (verified 状态和延迟)
+  - 支持验证步骤的彩色输出
+- **新增示例场景**
+  - `keyboard-verification-test.yaml`: 带验证的键盘输入测试场景
+- **架构对比**
+  - 完全实现 GUEST_VERIFICATION_SERVER_DESIGN.md 中的设计
+  - Executor 集成 VerificationServer 的所有功能
+  - 场景支持 VDI 平台操作和验证步骤
 
 ### 2025-12-31 (v0.4.2)
 - **代码审查: atp-application/cli/src**

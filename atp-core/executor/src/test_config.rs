@@ -584,9 +584,7 @@ impl TestConfig {
 
         // Test Behavior
         if let Ok(timeout) = env::var("ATP_TEST_TIMEOUT") {
-            self.test.timeout = timeout
-                .parse()
-                .context("Invalid ATP_TEST_TIMEOUT value")?;
+            self.test.timeout = timeout.parse().context("Invalid ATP_TEST_TIMEOUT value")?;
         }
         if let Ok(retry) = env::var("ATP_TEST_RETRY") {
             self.test.retry = retry.parse().context("Invalid ATP_TEST_RETRY value")?;
@@ -685,5 +683,221 @@ mod tests {
         // Empty VM name should fail
         config.vm.name = String::new();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_vdi_config_validation() {
+        let mut config = TestConfig::default();
+
+        // Add VDI config with empty base_url
+        config.vdi = Some(VdiConfig {
+            base_url: String::new(),
+            username: "admin".to_string(),
+            password: "password".to_string(),
+            verify_ssl: false,
+            connect_timeout: 10,
+        });
+
+        // Empty base_url should fail
+        assert!(config.validate().is_err());
+
+        // Fix base_url but empty username
+        config.vdi.as_mut().unwrap().base_url = "http://vdi.example.com".to_string();
+        config.vdi.as_mut().unwrap().username = String::new();
+        assert!(config.validate().is_err());
+
+        // Fix username - should pass
+        config.vdi.as_mut().unwrap().username = "admin".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_default_values() {
+        // Test all default value functions
+        assert_eq!(default_test_mode(), "integration");
+        assert_eq!(default_log_level(), "info");
+        assert_eq!(default_libvirt_uri(), "qemu:///system");
+        assert_eq!(default_vm_name(), "test-vm");
+        assert_eq!(default_connect_timeout(), 10);
+        assert_eq!(default_heartbeat_interval(), 30);
+        assert!(default_auto_reconnect());
+        assert_eq!(default_wait_boot(), 30);
+        assert_eq!(default_qmp_socket_prefix(), "/var/lib/libvirt/qemu/");
+        assert_eq!(default_protocol_timeout(), 30);
+        assert!(default_qga_wait_exec());
+        assert_eq!(default_localhost(), "localhost");
+        assert_eq!(default_spice_port(), 5900);
+        assert_eq!(
+            default_virtio_channel_prefix(),
+            "/var/lib/libvirt/qemu/channel/"
+        );
+        assert!(!default_verify_ssl());
+        assert_eq!(default_test_timeout(), 60);
+        assert_eq!(default_test_retry(), 3);
+        assert!(default_test_cleanup());
+        assert!(default_auto_migrate());
+    }
+
+    #[test]
+    fn test_environment_config_default() {
+        let env_config = EnvironmentConfig::default();
+        assert_eq!(env_config.mode, "integration");
+        assert_eq!(env_config.log_level, "info");
+    }
+
+    #[test]
+    fn test_libvirt_config_default() {
+        let libvirt_config = LibvirtConfig::default();
+        assert_eq!(libvirt_config.uri, "qemu:///system");
+        assert_eq!(libvirt_config.connect_timeout, 10);
+        assert_eq!(libvirt_config.heartbeat_interval, 30);
+        assert!(libvirt_config.auto_reconnect);
+        assert!(libvirt_config.hosts.is_empty());
+    }
+
+    #[test]
+    fn test_vm_config_default() {
+        let vm_config = VmConfig::default();
+        assert_eq!(vm_config.name, "test-vm");
+        assert!(vm_config.user.is_none());
+        assert!(vm_config.password.is_none());
+        assert_eq!(vm_config.wait_boot, 30);
+    }
+
+    #[test]
+    fn test_protocols_config_default() {
+        let protocols = ProtocolsConfig::default();
+        assert!(protocols.qmp.is_some());
+        assert!(protocols.qga.is_some());
+        assert!(protocols.spice.is_some());
+        assert!(protocols.virtio_serial.is_some());
+    }
+
+    #[test]
+    fn test_qmp_config_default() {
+        let qmp = QmpConfig::default();
+        assert_eq!(qmp.socket_prefix, "/var/lib/libvirt/qemu/");
+        assert_eq!(qmp.timeout, 30);
+    }
+
+    #[test]
+    fn test_qga_config_default() {
+        let qga = QgaConfig::default();
+        assert_eq!(qga.timeout, 30);
+        assert!(qga.wait_exec);
+    }
+
+    #[test]
+    fn test_spice_config_default() {
+        let spice = SpiceConfig::default();
+        assert_eq!(spice.host, "localhost");
+        assert_eq!(spice.port, 5900);
+        assert_eq!(spice.timeout, 30);
+    }
+
+    #[test]
+    fn test_virtio_serial_config_default() {
+        let virtio = VirtioSerialConfig::default();
+        assert_eq!(virtio.channel_prefix, "/var/lib/libvirt/qemu/channel/");
+        assert_eq!(virtio.timeout, 30);
+    }
+
+    #[test]
+    fn test_test_behavior_config_default() {
+        let test_behavior = TestBehaviorConfig::default();
+        assert_eq!(test_behavior.timeout, 60);
+        assert_eq!(test_behavior.retry, 3);
+        assert!(!test_behavior.skip_slow);
+        assert!(test_behavior.cleanup);
+    }
+
+    #[test]
+    fn test_config_yaml_roundtrip() {
+        let original = TestConfig::default();
+        let yaml = serde_yaml::to_string(&original).unwrap();
+        let parsed: TestConfig = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(original.environment.mode, parsed.environment.mode);
+        assert_eq!(original.vm.name, parsed.vm.name);
+        assert_eq!(original.libvirt.uri, parsed.libvirt.uri);
+    }
+
+    #[test]
+    fn test_config_json_roundtrip() {
+        let original = TestConfig::default();
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: TestConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(original.environment.mode, parsed.environment.mode);
+        assert_eq!(original.vm.name, parsed.vm.name);
+        assert_eq!(original.libvirt.uri, parsed.libvirt.uri);
+    }
+
+    #[test]
+    fn test_config_toml_roundtrip() {
+        let original = TestConfig::default();
+        let toml_str = toml::to_string(&original).unwrap();
+        let parsed: TestConfig = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(original.environment.mode, parsed.environment.mode);
+        assert_eq!(original.vm.name, parsed.vm.name);
+        assert_eq!(original.libvirt.uri, parsed.libvirt.uri);
+    }
+
+    #[test]
+    fn test_config_with_vdi() {
+        let mut config = TestConfig::default();
+        config.vdi = Some(VdiConfig {
+            base_url: "http://vdi.example.com".to_string(),
+            username: "admin".to_string(),
+            password: "secret".to_string(),
+            verify_ssl: true,
+            connect_timeout: 30,
+        });
+
+        // Serialize and deserialize
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: TestConfig = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.vdi.is_some());
+        let vdi = parsed.vdi.unwrap();
+        assert_eq!(vdi.base_url, "http://vdi.example.com");
+        assert_eq!(vdi.username, "admin");
+        assert!(vdi.verify_ssl);
+    }
+
+    #[test]
+    fn test_config_with_database() {
+        let mut config = TestConfig::default();
+        config.database = Some(DatabaseConfig {
+            path: PathBuf::from("/tmp/test.db"),
+            auto_migrate: true,
+            cleanup_on_exit: true,
+        });
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: TestConfig = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.database.is_some());
+        let db = parsed.database.unwrap();
+        assert_eq!(db.path, PathBuf::from("/tmp/test.db"));
+        assert!(db.auto_migrate);
+        assert!(db.cleanup_on_exit);
+    }
+
+    #[test]
+    fn test_libvirt_host_config() {
+        let host = LibvirtHostConfig {
+            id: "host1".to_string(),
+            host: "192.168.1.100".to_string(),
+            uri: "qemu+ssh://root@192.168.1.100/system".to_string(),
+        };
+
+        let json = serde_json::to_string(&host).unwrap();
+        let parsed: LibvirtHostConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.id, "host1");
+        assert_eq!(parsed.host, "192.168.1.100");
+        assert!(parsed.uri.contains("qemu+ssh"));
     }
 }

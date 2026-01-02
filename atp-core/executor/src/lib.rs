@@ -6,8 +6,12 @@ pub mod scenario;
 pub mod runner;
 pub mod test_config;
 
-pub use scenario::{Scenario, ScenarioStep, Action};
-pub use runner::{ScenarioRunner, ExecutionReport, StepReport, StepStatus};
+pub use scenario::{
+    Scenario, ScenarioStep, Action, VerificationConfig,
+    TargetSelector, TargetSelectorConfig, TargetMode,
+    ParallelConfig, FailureStrategy,
+};
+pub use runner::{ScenarioRunner, ExecutionReport, StepReport, StepStatus, MultiTargetReport};
 pub use test_config::{TestConfig, VdiConfig};
 
 use thiserror::Error;
