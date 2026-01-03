@@ -140,7 +140,9 @@ impl InputsChannel {
         connection_id: u32,
         password: Option<&str>,
     ) -> Result<()> {
-        self.connection.connect(host, port, connection_id, password).await?;
+        self.connection
+            .connect(host, port, connection_id, password)
+            .await?;
 
         // 处理 Inputs 初始化消息
         self.handle_init().await?;
@@ -230,8 +232,7 @@ impl InputsChannel {
         for ch in text.chars() {
             if let Some(scancode) = char_to_scancode(ch) {
                 // 检查是否需要 Shift
-                let needs_shift = ch.is_ascii_uppercase()
-                    || "!@#$%^&*()_+{}|:\"<>?~".contains(ch);
+                let needs_shift = ch.is_ascii_uppercase() || "!@#$%^&*()_+{}|:\"<>?~".contains(ch);
 
                 if needs_shift {
                     self.send_key_down(0x2A).await?; // Left Shift
@@ -330,7 +331,11 @@ impl InputsChannel {
 
     /// 发送鼠标滚轮事件
     pub async fn send_mouse_scroll(&self, up: bool, count: u32) -> Result<()> {
-        let button = if up { MouseButton::ScrollUp } else { MouseButton::ScrollDown };
+        let button = if up {
+            MouseButton::ScrollUp
+        } else {
+            MouseButton::ScrollDown
+        };
 
         for _ in 0..count {
             self.send_mouse_press(button).await?;
@@ -348,7 +353,9 @@ impl InputsChannel {
     /// 检查连接状态
     fn check_connected(&self) -> Result<()> {
         if !self.connection.is_connected() {
-            return Err(ProtocolError::ConnectionFailed("Inputs 通道未连接".to_string()));
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
         }
         Ok(())
     }
@@ -379,7 +386,7 @@ impl InputsChannel {
             111 => {
                 self.motion_ack_pending.fetch_sub(
                     MOTION_ACK_BUNCH.min(self.motion_ack_pending.load(Ordering::Relaxed)),
-                    Ordering::Relaxed
+                    Ordering::Relaxed,
                 );
                 trace!("收到鼠标移动确认");
             }

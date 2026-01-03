@@ -36,31 +36,31 @@
 //! client.inputs().send_mouse_press(MouseButton::Left).await?;
 //! ```
 
-pub mod types;
-pub mod constants;
-pub mod messages;
 pub mod channel;
-pub mod discovery;
 pub mod client;
-pub mod inputs;
+pub mod constants;
+pub mod discovery;
 pub mod display;
+pub mod inputs;
+pub mod messages;
+pub mod types;
 pub mod usbredir;
 
 // 重新导出主要类型
-pub use types::*;
-pub use constants::*;
-pub use channel::{SpiceChannel, ChannelType};
-pub use discovery::{SpiceDiscovery, SpiceVmInfo};
+pub use channel::{ChannelType, SpiceChannel};
 pub use client::{SpiceClient, SpiceConfig};
-pub use inputs::{InputsChannel, MouseButton, MouseMode, KeyModifiers};
+pub use constants::*;
+pub use discovery::{SpiceDiscovery, SpiceVmInfo};
 pub use display::{DisplayChannel, DisplayConfig};
-pub use usbredir::{UsbRedirChannel, UsbDevice, UsbFilter};
+pub use inputs::{InputsChannel, KeyModifiers, MouseButton, MouseMode};
+pub use types::*;
+pub use usbredir::{UsbDevice, UsbFilter, UsbRedirChannel};
 
 use crate::{Protocol, ProtocolBuilder, ProtocolError, ProtocolType, Result};
 use async_trait::async_trait;
-use virt::domain::Domain;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use virt::domain::Domain;
 
 /// SPICE 协议实现
 ///
@@ -99,7 +99,9 @@ impl SpiceProtocol {
 
     /// 发送键盘按键
     pub async fn send_key(&self, scancode: u32, pressed: bool) -> Result<()> {
-        let client = self.client.as_ref()
+        let client = self
+            .client
+            .as_ref()
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         let client_guard = client.read().await;
@@ -112,16 +114,23 @@ impl SpiceProtocol {
 
     /// 发送鼠标移动
     pub async fn send_mouse_move(&self, x: u32, y: u32, display_id: u8) -> Result<()> {
-        let client = self.client.as_ref()
+        let client = self
+            .client
+            .as_ref()
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         let client_guard = client.read().await;
-        client_guard.inputs().send_mouse_position(x, y, display_id).await
+        client_guard
+            .inputs()
+            .send_mouse_position(x, y, display_id)
+            .await
     }
 
     /// 发送鼠标点击
     pub async fn send_mouse_click(&self, button: MouseButton, pressed: bool) -> Result<()> {
-        let client = self.client.as_ref()
+        let client = self
+            .client
+            .as_ref()
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         let client_guard = client.read().await;
@@ -142,9 +151,24 @@ impl Default for SpiceProtocol {
 #[async_trait]
 impl Protocol for SpiceProtocol {
     async fn connect(&mut self, domain: &Domain) -> Result<()> {
-        // 通过 libvirt 发现 SPICE 配置
+        // 从 libvirt 连接获取主机 IP
+        let conn = domain.get_connect().map_err(|e| {
+            ProtocolError::ConnectionFailed(format!("无法获取 libvirt 连接: {}", e))
+        })?;
+
+        // 使用 SpiceDiscovery 并设置默认主机为连接的主机
         let discovery = SpiceDiscovery::new();
+
+        // 从连接 URI 获取主机地址
+        let host_ip = discovery
+            .get_host_ip(&conn)
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+        // 创建带有正确默认主机的发现器
+        let discovery = SpiceDiscovery::new().with_default_host(&host_ip);
         let vm_info = discovery.discover_from_domain(domain).await?;
+
+        tracing::info!("连接到 SPICE 服务器: {}:{}", vm_info.host, vm_info.port);
 
         // 创建配置
         let config = SpiceConfig::new(&vm_info.host, vm_info.port)
@@ -165,7 +189,9 @@ impl Protocol for SpiceProtocol {
     async fn send(&mut self, data: &[u8]) -> Result<()> {
         // SPICE 协议通过特定通道发送数据，这里作为通用接口
         // 实际使用时应该调用具体的通道方法
-        let _client = self.client.as_ref()
+        let _client = self
+            .client
+            .as_ref()
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         // 将数据发送到主通道（用于调试/测试）
@@ -177,7 +203,9 @@ impl Protocol for SpiceProtocol {
 
     async fn receive(&mut self) -> Result<Vec<u8>> {
         // SPICE 协议通过特定通道接收数据
-        let _client = self.client.as_ref()
+        let _client = self
+            .client
+            .as_ref()
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         // TODO: 实现从主通道接收数据

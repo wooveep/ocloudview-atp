@@ -17,6 +17,8 @@ pub struct Storage {
     _pool: SqlitePool,
     reports: ReportRepository,
     scenarios: ScenarioRepository,
+    hosts: HostRepository,
+    domain_host_mappings: DomainHostMappingRepository,
 }
 
 impl Storage {
@@ -27,6 +29,8 @@ impl Storage {
             _pool: pool.clone(),
             reports: ReportRepository::new(pool.clone()),
             scenarios: ScenarioRepository::new(pool.clone()),
+            hosts: HostRepository::new(pool.clone()),
+            domain_host_mappings: DomainHostMappingRepository::new(pool),
         }
     }
 
@@ -40,7 +44,13 @@ impl Storage {
         &self.scenarios
     }
 
-    // TODO: 添加其他 repository 访问器
-    // pub fn hosts(&self) -> &HostRepository { ... }
-    // pub fn metrics(&self) -> &MetricRepository { ... }
+    /// 获取主机仓储
+    pub fn hosts(&self) -> &HostRepository {
+        &self.hosts
+    }
+
+    /// 获取虚拟机-主机映射仓储
+    pub fn domain_host_mappings(&self) -> &DomainHostMappingRepository {
+        &self.domain_host_mappings
+    }
 }

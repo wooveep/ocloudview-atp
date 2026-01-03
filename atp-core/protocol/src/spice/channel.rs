@@ -4,15 +4,15 @@
 
 use crate::{ProtocolError, Result};
 use async_trait::async_trait;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tracing::{debug, trace};
 
-use super::types::*;
 use super::constants::*;
+use super::types::*;
 
 /// 通道类型枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -148,14 +148,15 @@ impl ChannelConnection {
         password: Option<&str>,
     ) -> Result<()> {
         let addr = format!("{}:{}", host, port);
-        debug!("连接到 SPICE 服务器: {} (通道: {:?})", addr, self.channel_type);
+        debug!(
+            "连接到 SPICE 服务器: {} (通道: {:?})",
+            addr, self.channel_type
+        );
 
         // 建立 TCP 连接
-        let stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| ProtocolError::ConnectionFailed(
-                format!("无法连接到 SPICE 服务器 {}: {}", addr, e)
-            ))?;
+        let stream = TcpStream::connect(&addr).await.map_err(|e| {
+            ProtocolError::ConnectionFailed(format!("无法连接到 SPICE 服务器 {}: {}", addr, e))
+        })?;
 
         let (read_half, write_half) = tokio::io::split(stream);
         let reader = BufReader::new(read_half);
@@ -176,10 +177,8 @@ impl ChannelConnection {
     /// 执行 SPICE 握手
     async fn perform_handshake(&mut self, password: Option<&str>) -> Result<()> {
         // 1. 发送链接消息
-        let link_msg = SpiceLinkMessage::new(
-            self.channel_type.to_u8(),
-            self.channel_id,
-        ).with_connection_id(self.connection_id);
+        let link_msg = SpiceLinkMessage::new(self.channel_type.to_u8(), self.channel_id)
+            .with_connection_id(self.connection_id);
 
         let link_data = link_msg.to_bytes();
         let header = SpiceLinkHeader::new(link_data.len() as u32);
@@ -188,11 +187,17 @@ impl ChannelConnection {
         let writer = self.writer.as_ref().unwrap();
         let mut writer_guard = writer.lock().await;
 
-        writer_guard.write_all(&header.to_bytes()).await
+        writer_guard
+            .write_all(&header.to_bytes())
+            .await
             .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        writer_guard.write_all(&link_data).await
+        writer_guard
+            .write_all(&link_data)
+            .await
             .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        writer_guard.flush().await
+        writer_guard
+            .flush()
+            .await
             .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
         drop(writer_guard);
 
@@ -204,10 +209,10 @@ impl ChannelConnection {
 
         // 读取链接头部
         let mut header_buf = [0u8; 16];
-        reader_guard.read_exact(&mut header_buf).await
-            .map_err(|e| ProtocolError::ReceiveFailed(
-                format!("读取链接头部失败: {}", e)
-            ))?;
+        reader_guard
+            .read_exact(&mut header_buf)
+            .await
+            .map_err(|e| ProtocolError::ReceiveFailed(format!("读取链接头部失败: {}", e)))?;
 
         let reply_header = SpiceLinkHeader::from_bytes(&header_buf)
             .ok_or_else(|| ProtocolError::ParseError("无效的链接头部".to_string()))?;
@@ -223,18 +228,19 @@ impl ChannelConnection {
 
         // 读取回复内容
         let mut reply_buf = vec![0u8; reply_header.size as usize];
-        reader_guard.read_exact(&mut reply_buf).await
-            .map_err(|e| ProtocolError::ReceiveFailed(
-                format!("读取链接回复失败: {}", e)
-            ))?;
+        reader_guard
+            .read_exact(&mut reply_buf)
+            .await
+            .map_err(|e| ProtocolError::ReceiveFailed(format!("读取链接回复失败: {}", e)))?;
 
         let reply = SpiceLinkReply::from_bytes(&reply_buf)
             .ok_or_else(|| ProtocolError::ParseError("无效的链接回复".to_string()))?;
 
         if !reply.is_ok() {
-            return Err(ProtocolError::ConnectionFailed(
-                format!("SPICE 链接错误: {}", reply.error)
-            ));
+            return Err(ProtocolError::ConnectionFailed(format!(
+                "SPICE 链接错误: {}",
+                reply.error
+            )));
         }
 
         drop(reader_guard);
@@ -356,9 +362,13 @@ impl ChannelConnection {
 
         // 发送 128 字节的空票据
         let ticket = [0u8; 128];
-        writer_guard.write_all(&ticket).await
+        writer_guard
+            .write_all(&ticket)
+            .await
             .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        writer_guard.flush().await
+        writer_guard
+            .flush()
+            .await
             .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
 
         // 读取认证结果
@@ -368,16 +378,17 @@ impl ChannelConnection {
         let mut reader_guard = reader.lock().await;
 
         let mut result = [0u8; 4];
-        reader_guard.read_exact(&mut result).await
-            .map_err(|e| ProtocolError::ReceiveFailed(
-                format!("读取认证结果失败: {}", e)
-            ))?;
+        reader_guard
+            .read_exact(&mut result)
+            .await
+            .map_err(|e| ProtocolError::ReceiveFailed(format!("读取认证结果失败: {}", e)))?;
 
         let auth_result = u32::from_le_bytes(result);
         if auth_result != 0 {
-            return Err(ProtocolError::ConnectionFailed(
-                format!("SPICE 认证失败: {}", auth_result)
-            ));
+            return Err(ProtocolError::ConnectionFailed(format!(
+                "SPICE 认证失败: {}",
+                auth_result
+            )));
         }
 
         debug!("SPICE 认证成功");
@@ -386,7 +397,9 @@ impl ChannelConnection {
 
     /// 发送消息
     pub async fn send_message(&mut self, msg_type: u16, data: &[u8]) -> Result<()> {
-        let writer = self.writer.as_ref()
+        let writer = self
+            .writer
+            .as_ref()
             .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
 
         let serial = self.serial.fetch_add(1, Ordering::SeqCst);
@@ -395,21 +408,28 @@ impl ChannelConnection {
 
         if self.use_mini_header {
             let header = SpiceMiniDataHeader::new(msg_type, data.len() as u32);
-            writer_guard.write_all(&header.to_bytes()).await
+            writer_guard
+                .write_all(&header.to_bytes())
+                .await
                 .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
         } else {
-            let header = SpiceDataHeader::new(msg_type, data.len() as u32)
-                .with_serial(serial);
-            writer_guard.write_all(&header.to_bytes()).await
+            let header = SpiceDataHeader::new(msg_type, data.len() as u32).with_serial(serial);
+            writer_guard
+                .write_all(&header.to_bytes())
+                .await
                 .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
         }
 
         if !data.is_empty() {
-            writer_guard.write_all(data).await
+            writer_guard
+                .write_all(data)
+                .await
                 .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
         }
 
-        writer_guard.flush().await
+        writer_guard
+            .flush()
+            .await
             .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
 
         trace!("发送消息: type={}, size={}", msg_type, data.len());
@@ -418,21 +438,27 @@ impl ChannelConnection {
 
     /// 接收消息
     pub async fn receive_message(&mut self) -> Result<(u16, Vec<u8>)> {
-        let reader = self.reader.as_ref()
+        let reader = self
+            .reader
+            .as_ref()
             .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
 
         let mut reader_guard = reader.lock().await;
 
         let (msg_type, size) = if self.use_mini_header {
             let mut buf = [0u8; SpiceMiniDataHeader::SIZE];
-            reader_guard.read_exact(&mut buf).await
+            reader_guard
+                .read_exact(&mut buf)
+                .await
                 .map_err(|e| ProtocolError::ReceiveFailed(e.to_string()))?;
             let header = SpiceMiniDataHeader::from_bytes(&buf)
                 .ok_or_else(|| ProtocolError::ParseError("无效的消息头".to_string()))?;
             (header.msg_type, header.size)
         } else {
             let mut buf = [0u8; SpiceDataHeader::SIZE];
-            reader_guard.read_exact(&mut buf).await
+            reader_guard
+                .read_exact(&mut buf)
+                .await
                 .map_err(|e| ProtocolError::ReceiveFailed(e.to_string()))?;
             let header = SpiceDataHeader::from_bytes(&buf)
                 .ok_or_else(|| ProtocolError::ParseError("无效的消息头".to_string()))?;
@@ -441,7 +467,9 @@ impl ChannelConnection {
 
         let mut data = vec![0u8; size as usize];
         if size > 0 {
-            reader_guard.read_exact(&mut data).await
+            reader_guard
+                .read_exact(&mut data)
+                .await
                 .map_err(|e| ProtocolError::ReceiveFailed(e.to_string()))?;
         }
 

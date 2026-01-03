@@ -5,6 +5,48 @@ All notable changes to the OCloudView ATP project will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-dev] - 2026-01-03
+
+### Added
+- **Executor 模块 VDI 智能集成**
+  - VDI 平台自动发现: 优先从 VDI 平台获取虚拟机列表
+  - 虚拟机-主机映射持久化: 自动保存虚拟机与主机的映射关系到数据库
+  - 动态主机注册: 从数据库读取主机信息，自动注册到 TransportManager
+  - 智能目标选择: 如果未指定目标虚拟机，自动从 VDI 获取第一个运行中的虚拟机
+  - `InputChannelConfig`: 配置输入通道类型 (QMP/SPICE)
+  - `InputChannelType`: 枚举类型 Qmp/Spice
+
+- **存储层增强**
+  - `HostRepository`: 主机记录的 CRUD 操作，支持 upsert
+  - `DomainHostMappingRepository`: 虚拟机-主机映射的 CRUD 操作，支持批量 upsert
+  - 数据库迁移: 新增 `hosts` 和 `domain_host_mappings` 表
+  - `HostRecord` 和 `DomainHostMappingRecord` 数据模型
+
+- **配置管理**
+  - 新增 `config/atp.toml.example` 配置示例文件
+  - 配置文件搜索路径: `./config/atp.toml`, `~/.config/atp/atp.toml`, `/etc/atp/atp.toml`
+
+### Changed
+- **CLI 配置路径**: 从 `test.toml` 迁移到 `config/atp.toml`
+- **QMP 协议**: 重构错误处理，改进响应解析逻辑
+- **QGA 协议**: 增强 PowerShell 命令执行支持，改进 Base64 编码
+- **SPICE 协议**: 简化通道管理，优化连接流程和错误处理
+- **Executor**: 代码量从 ~3,207 行增长到 ~3,500 行
+- **Storage**: 代码量从 ~800 行增长到 ~1,000 行
+- **项目整体进度**: 90% → 92%
+- **Executor 完成度**: 95% → 98%
+- **Storage 完成度**: 85% → 95%
+- **CLI 完成度**: 92% → 95%
+- **SPICE 完成度**: 60% → 65%
+
+### Removed
+- 删除 `test.toml` 和 `test.toml.example` (迁移到 config 目录)
+
+### Fixed
+- 修复 QMP 协议响应解析中的 JSON 解析错误处理
+- 修复 SPICE 通道连接时的超时处理
+- 改进场景执行器的错误恢复逻辑
+
 ## [0.5.0-dev] - 2026-01-01
 
 ### Fixed

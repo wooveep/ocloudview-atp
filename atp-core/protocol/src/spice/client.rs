@@ -9,10 +9,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use super::channel::{ChannelConnection, ChannelType};
-use super::inputs::InputsChannel;
 use super::display::DisplayChannel;
-use super::usbredir::UsbRedirChannel;
+use super::inputs::InputsChannel;
 use super::messages::*;
+use super::usbredir::UsbRedirChannel;
 
 /// SPICE 客户端配置
 #[derive(Debug, Clone)]
@@ -145,12 +145,15 @@ impl SpiceClient {
     pub async fn connect(&mut self) -> Result<()> {
         if self.state != ClientState::Disconnected {
             return Err(ProtocolError::ConnectionFailed(
-                "客户端已连接或正在连接".to_string()
+                "客户端已连接或正在连接".to_string(),
             ));
         }
 
         self.state = ClientState::Connecting;
-        info!("连接到 SPICE 服务器: {}:{}", self.config.host, self.config.port);
+        info!(
+            "连接到 SPICE 服务器: {}:{}",
+            self.config.host, self.config.port
+        );
 
         // TODO: 添加 TLS 支持
         //
@@ -248,12 +251,14 @@ impl SpiceClient {
 
         // 1. 连接主通道
         let mut main_channel = ChannelConnection::new(ChannelType::Main, 0);
-        main_channel.connect(
-            &self.config.host,
-            self.config.port,
-            0, // 初始连接 ID 为 0
-            self.config.password.as_deref(),
-        ).await?;
+        main_channel
+            .connect(
+                &self.config.host,
+                self.config.port,
+                0, // 初始连接 ID 为 0
+                self.config.password.as_deref(),
+            )
+            .await?;
 
         // 2. 处理主通道初始化
         self.handle_main_init(&mut main_channel).await?;
@@ -289,12 +294,13 @@ impl SpiceClient {
                     if let Some(init) = MsgMainInit::from_bytes(&data) {
                         self.session_id = init.session_id;
                         self.mouse_mode = init.current_mouse_mode;
-                        debug!("收到 Main Init: session_id={}, mouse_mode={}",
-                               init.session_id, init.current_mouse_mode);
+                        debug!(
+                            "收到 Main Init: session_id={}, mouse_mode={}",
+                            init.session_id, init.current_mouse_mode
+                        );
 
                         // 请求客户端鼠标模式
-                        if self.config.request_client_mouse
-                            && (init.supported_mouse_modes & 2) != 0
+                        if self.config.request_client_mouse && (init.supported_mouse_modes & 2) != 0
                         {
                             let req = MsgcMainMouseModeRequest::new(2);
                             channel.send_message(105, &req.to_bytes()).await?;
@@ -306,7 +312,8 @@ impl SpiceClient {
                     if let Some(list) = MsgMainChannelsList::from_bytes(&data) {
                         debug!("收到通道列表: {} 个通道", list.channels.len());
                         for ch in &list.channels {
-                            self.available_channels.push((ch.channel_type, ch.channel_id));
+                            self.available_channels
+                                .push((ch.channel_type, ch.channel_id));
                         }
                     }
                     // 通道列表之后初始化完成
@@ -340,12 +347,14 @@ impl SpiceClient {
         }
 
         let mut inputs = InputsChannel::new(0);
-        inputs.connect(
-            &self.config.host,
-            self.config.port,
-            self.session_id,
-            self.config.password.as_deref(),
-        ).await?;
+        inputs
+            .connect(
+                &self.config.host,
+                self.config.port,
+                self.session_id,
+                self.config.password.as_deref(),
+            )
+            .await?;
 
         self.inputs_channel = Some(inputs);
         info!("输入通道已连接");
@@ -359,12 +368,14 @@ impl SpiceClient {
         }
 
         let mut display = DisplayChannel::new(id);
-        display.connect(
-            &self.config.host,
-            self.config.port,
-            self.session_id,
-            self.config.password.as_deref(),
-        ).await?;
+        display
+            .connect(
+                &self.config.host,
+                self.config.port,
+                self.session_id,
+                self.config.password.as_deref(),
+            )
+            .await?;
 
         self.display_channels.insert(id, display);
         info!("显示通道 {} 已连接", id);
@@ -378,12 +389,14 @@ impl SpiceClient {
         }
 
         let mut usbredir = UsbRedirChannel::new(id);
-        usbredir.connect(
-            &self.config.host,
-            self.config.port,
-            self.session_id,
-            self.config.password.as_deref(),
-        ).await?;
+        usbredir
+            .connect(
+                &self.config.host,
+                self.config.port,
+                self.session_id,
+                self.config.password.as_deref(),
+            )
+            .await?;
 
         self.usbredir_channels.insert(id, usbredir);
         info!("USB 重定向通道 {} 已连接", id);
@@ -430,14 +443,12 @@ impl SpiceClient {
 
     /// 获取输入通道引用
     pub fn inputs(&self) -> &InputsChannel {
-        self.inputs_channel.as_ref()
-            .expect("输入通道未连接")
+        self.inputs_channel.as_ref().expect("输入通道未连接")
     }
 
     /// 获取输入通道可变引用
     pub fn inputs_mut(&mut self) -> &mut InputsChannel {
-        self.inputs_channel.as_mut()
-            .expect("输入通道未连接")
+        self.inputs_channel.as_mut().expect("输入通道未连接")
     }
 
     /// 获取显示通道引用
@@ -482,7 +493,9 @@ impl SpiceClient {
 
     /// 请求切换鼠标模式
     pub async fn request_mouse_mode(&mut self, mode: u32) -> Result<()> {
-        let main = self.main_channel.as_mut()
+        let main = self
+            .main_channel
+            .as_mut()
             .ok_or_else(|| ProtocolError::ConnectionFailed("主通道未连接".to_string()))?;
 
         let req = MsgcMainMouseModeRequest::new(mode);
@@ -494,7 +507,9 @@ impl SpiceClient {
 
     /// 处理主通道事件（应在后台任务中调用）
     pub async fn process_main_events(&mut self) -> Result<()> {
-        let main = self.main_channel.as_mut()
+        let main = self
+            .main_channel
+            .as_mut()
             .ok_or_else(|| ProtocolError::ConnectionFailed("主通道未连接".to_string()))?;
 
         let (msg_type, data) = main.receive_message().await?;

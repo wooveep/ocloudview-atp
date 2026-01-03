@@ -6,11 +6,10 @@
 //! - 默认值 (优先级最低)
 //!
 //! 配置文件搜索路径 (按优先级):
-//! 1. `ATP_TEST_CONFIG` 环境变量指定的路径
-//! 2. `./test.toml` (当前目录)
-//! 3. `./tests/config.toml` (tests 目录)
-//! 4. `~/.config/atp/test.toml` (用户配置目录)
-//! 5. `/etc/atp/test.toml` (系统配置目录)
+//! 1. ATP_TEST_CONFIG 环境变量指定的路径
+//! 2. `./config/atp.toml` (config 目录)
+//! 3. `~/.config/atp/atp.toml` (用户配置目录)
+//! 4. `/etc/atp/atp.toml` (系统配置目录)
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -458,13 +457,11 @@ impl TestConfig {
             }
         }
 
-        // 2. 当前目录
+        // 2. config 目录
         let paths = vec![
-            PathBuf::from("./test.toml"),
-            PathBuf::from("./test.yaml"),
-            PathBuf::from("./test.json"),
-            PathBuf::from("./tests/config.toml"),
-            PathBuf::from("./tests/config.yaml"),
+            PathBuf::from("./config/atp.toml"),
+            PathBuf::from("./config/atp.yaml"),
+            PathBuf::from("./config/atp.json"),
         ];
 
         for path in &paths {
@@ -476,8 +473,8 @@ impl TestConfig {
         // 3. 用户配置目录
         if let Some(home) = dirs::home_dir() {
             let user_paths = vec![
-                home.join(".config/atp/test.toml"),
-                home.join(".config/atp/test.yaml"),
+                home.join(".config/atp/atp.toml"),
+                home.join(".config/atp/atp.yaml"),
             ];
 
             for path in &user_paths {
@@ -491,8 +488,8 @@ impl TestConfig {
         #[cfg(target_os = "linux")]
         {
             let system_paths = vec![
-                PathBuf::from("/etc/atp/test.toml"),
-                PathBuf::from("/etc/atp/test.yaml"),
+                PathBuf::from("/etc/atp/atp.toml"),
+                PathBuf::from("/etc/atp/atp.yaml"),
             ];
 
             for path in &system_paths {

@@ -53,20 +53,17 @@ impl SpiceDiscovery {
     /// 从 Domain 发现 SPICE 配置
     pub async fn discover_from_domain(&self, domain: &Domain) -> Result<SpiceVmInfo> {
         // 获取 Domain XML
-        let xml = domain.get_xml_desc(0)
-            .map_err(|e| ProtocolError::ConnectionFailed(
-                format!("无法获取虚拟机 XML: {}", e)
-            ))?;
+        let xml = domain
+            .get_xml_desc(0)
+            .map_err(|e| ProtocolError::ConnectionFailed(format!("无法获取虚拟机 XML: {}", e)))?;
 
-        let name = domain.get_name()
-            .map_err(|e| ProtocolError::ConnectionFailed(
-                format!("无法获取虚拟机名称: {}", e)
-            ))?;
+        let name = domain
+            .get_name()
+            .map_err(|e| ProtocolError::ConnectionFailed(format!("无法获取虚拟机名称: {}", e)))?;
 
-        let uuid = domain.get_uuid_string()
-            .map_err(|e| ProtocolError::ConnectionFailed(
-                format!("无法获取虚拟机 UUID: {}", e)
-            ))?;
+        let uuid = domain
+            .get_uuid_string()
+            .map_err(|e| ProtocolError::ConnectionFailed(format!("无法获取虚拟机 UUID: {}", e)))?;
 
         // 解析 XML 获取 SPICE 配置
         self.parse_spice_from_xml(&xml, &name, &uuid)
@@ -74,17 +71,19 @@ impl SpiceDiscovery {
 
     /// 从 libvirt 连接发现所有带 SPICE 的虚拟机
     pub async fn discover_all(&self, conn: &Connect) -> Result<Vec<SpiceVmInfo>> {
-        let domains = conn.list_all_domains(0)
-            .map_err(|e| ProtocolError::ConnectionFailed(
-                format!("无法列出虚拟机: {}", e)
-            ))?;
+        let domains = conn
+            .list_all_domains(0)
+            .map_err(|e| ProtocolError::ConnectionFailed(format!("无法列出虚拟机: {}", e)))?;
 
         let mut vms = Vec::new();
 
         for domain in domains {
             match self.discover_from_domain(&domain).await {
                 Ok(info) => {
-                    debug!("发现 SPICE 虚拟机: {} ({}:{})", info.name, info.host, info.port);
+                    debug!(
+                        "发现 SPICE 虚拟机: {} ({}:{})",
+                        info.name, info.host, info.port
+                    );
                     vms.push(info);
                 }
                 Err(e) => {
@@ -182,41 +181,47 @@ impl SpiceDiscovery {
         // 目前使用简单的字符串解析
 
         // 查找 <graphics type='spice' ...>
-        let graphics_start = xml.find("<graphics type='spice'")
+        let graphics_start = xml
+            .find("<graphics type='spice'")
             .or_else(|| xml.find("<graphics type=\"spice\""))
-            .ok_or_else(|| ProtocolError::ConnectionFailed(
-                "虚拟机未配置 SPICE 图形".to_string()
-            ))?;
+            .ok_or_else(|| {
+                ProtocolError::ConnectionFailed("虚拟机未配置 SPICE 图形".to_string())
+            })?;
 
-        let graphics_end = xml[graphics_start..].find("/>")
+        let graphics_end = xml[graphics_start..]
+            .find("/>")
             .or_else(|| xml[graphics_start..].find("</graphics>"))
             .map(|pos| graphics_start + pos)
-            .ok_or_else(|| ProtocolError::ParseError(
-                "无法解析 SPICE 图形配置".to_string()
-            ))?;
+            .ok_or_else(|| ProtocolError::ParseError("无法解析 SPICE 图形配置".to_string()))?;
 
         let graphics_xml = &xml[graphics_start..graphics_end];
 
         // 解析端口
-        let port = self.extract_attr(graphics_xml, "port")
+        let port = self
+            .extract_attr(graphics_xml, "port")
             .and_then(|s| s.parse::<i32>().ok())
             .filter(|&p| p > 0)
             .map(|p| p as u16)
-            .ok_or_else(|| ProtocolError::ConnectionFailed(
-                "SPICE 端口未配置或无效".to_string()
-            ))?;
+            .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 端口未配置或无效".to_string()))?;
 
         // 解析 TLS 端口
-        let tls_port = self.extract_attr(graphics_xml, "tlsPort")
+        let tls_port = self
+            .extract_attr(graphics_xml, "tlsPort")
             .and_then(|s| s.parse::<i32>().ok())
             .filter(|&p| p > 0)
             .map(|p| p as u16);
 
         // 解析监听地址
-        let listen = self.extract_attr(graphics_xml, "listen")
+        // 首先检查是否有嵌套的 <listen> 元素
+        let listen = self
+            .extract_listen_address(&xml[graphics_start..])
+            .or_else(|| self.extract_attr(graphics_xml, "listen"))
             .unwrap_or_else(|| self.default_host.clone());
 
-        let host = if listen == "0.0.0.0" || listen.is_empty() {
+        // 处理特殊地址
+        let host = if listen == "0.0.0.0" || listen == "::" || listen == ":::" || listen.is_empty()
+        {
+            // 如果是监听所有地址，使用默认主机
             self.default_host.clone()
         } else {
             listen
@@ -256,6 +261,33 @@ impl SpiceDiscovery {
             let value_start = start + pattern2.len();
             if let Some(end) = xml[value_start..].find('"') {
                 return Some(xml[value_start..value_start + end].to_string());
+            }
+        }
+
+        None
+    }
+
+    /// 从嵌套的 <listen> 元素中提取地址
+    ///
+    /// 处理格式:
+    /// <graphics type='spice' port='5900'>
+    ///   <listen type='address' address='192.168.1.100'/>
+    /// </graphics>
+    fn extract_listen_address(&self, xml: &str) -> Option<String> {
+        // 查找 <listen 元素
+        if let Some(listen_start) = xml.find("<listen ") {
+            let listen_end = xml[listen_start..]
+                .find("/>")
+                .or_else(|| xml[listen_start..].find(">"))
+                .map(|pos| listen_start + pos)?;
+
+            let listen_xml = &xml[listen_start..listen_end];
+
+            // 提取 address 属性
+            if let Some(addr) = self.extract_attr(listen_xml, "address") {
+                if !addr.is_empty() {
+                    return Some(addr);
+                }
             }
         }
 
@@ -351,9 +383,10 @@ impl SpiceDiscovery {
                 // TODO: 实现备用方法
                 // 1. 尝试通过 shell 执行 virsh qemu-monitor-command
                 // 2. 或者修改 XML 配置
-                Err(ProtocolError::CommandFailed(
-                    format!("设置 SPICE 密码失败: {}", e)
-                ))
+                Err(ProtocolError::CommandFailed(format!(
+                    "设置 SPICE 密码失败: {}",
+                    e
+                )))
             }
         }
     }
@@ -421,11 +454,10 @@ impl SpiceDiscovery {
                 info!("SPICE 密码过期时间设置成功: {}", expiry_time);
                 Ok(())
             }
-            Err(e) => {
-                Err(ProtocolError::CommandFailed(
-                    format!("设置 SPICE 密码过期时间失败: {}", e)
-                ))
-            }
+            Err(e) => Err(ProtocolError::CommandFailed(format!(
+                "设置 SPICE 密码过期时间失败: {}",
+                e
+            ))),
         }
     }
 
@@ -434,10 +466,9 @@ impl SpiceDiscovery {
     /// 从 libvirt 连接 URI 或系统配置中获取宿主机 IP
     pub fn get_host_ip(&self, conn: &Connect) -> Result<String> {
         // 从连接 URI 获取主机地址
-        let uri = conn.get_uri()
-            .map_err(|e| ProtocolError::ConnectionFailed(
-                format!("无法获取连接 URI: {}", e)
-            ))?;
+        let uri = conn
+            .get_uri()
+            .map_err(|e| ProtocolError::ConnectionFailed(format!("无法获取连接 URI: {}", e)))?;
 
         debug!("Libvirt URI: {}", uri);
 
@@ -508,7 +539,9 @@ mod tests {
         "#;
 
         let discovery = SpiceDiscovery::new();
-        let info = discovery.parse_spice_from_xml(xml, "test-vm", "uuid-123").unwrap();
+        let info = discovery
+            .parse_spice_from_xml(xml, "test-vm", "uuid-123")
+            .unwrap();
 
         assert_eq!(info.name, "test-vm");
         assert_eq!(info.host, "192.168.1.100");
@@ -531,10 +564,7 @@ mod tests {
             Some("192.168.1.100".to_string())
         );
 
-        assert_eq!(
-            discovery.extract_host_from_uri("qemu:///system"),
-            None
-        );
+        assert_eq!(discovery.extract_host_from_uri("qemu:///system"), None);
     }
 
     #[test]

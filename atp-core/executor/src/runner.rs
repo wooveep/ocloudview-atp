@@ -23,7 +23,8 @@ use verification_server::{
 };
 
 use crate::{
-    Action, ExecutorError, FailureStrategy, Result, Scenario, ScenarioStep, VerificationConfig,
+    Action, ExecutorError, FailureStrategy, InputChannelType, Result, Scenario, ScenarioStep,
+    VerificationConfig,
 };
 
 /// 场景执行器
@@ -62,6 +63,9 @@ pub struct ScenarioRunner {
 
     /// 当前验证用的 VM ID (运行时设置)
     verification_vm_id: Option<String>,
+
+    /// 当前场景的输入通道类型
+    input_channel_type: InputChannelType,
 }
 
 impl ScenarioRunner {
@@ -84,6 +88,7 @@ impl ScenarioRunner {
             verification_server_handle: None,
             client_manager: None,
             verification_vm_id: None,
+            input_channel_type: InputChannelType::Qmp,
         }
     }
 
@@ -106,9 +111,49 @@ impl ScenarioRunner {
     }
 
     /// 执行场景
+    ///
+    /// 智能选择执行模式：
+    /// - 如果配置了 `target_domains` (多目标选择器)，自动使用多目标执行
+    /// - 如果配置了 `target_domain` (单目标)，使用单目标执行
+    /// - 如果未配置任何目标，从 VDI 平台自动获取第一个运行中的虚拟机
     pub async fn run(&mut self, scenario: &Scenario) -> Result<ExecutionReport> {
         info!("开始执行场景: {}", scenario.name);
 
+        // 检查是否使用多目标模式
+        // 优先检查 target_domains，如果配置了则使用多目标执行
+        if scenario.target_domains.is_some() {
+            info!("检测到多目标配置 (target_domains)，使用多目标执行模式");
+            let multi_report = self.run_multi_target(scenario).await?;
+            // 将多目标报告转换为单个报告 (取第一个或合并)
+            if let Some(first_report) = multi_report.reports.into_iter().next() {
+                return Ok(first_report);
+            }
+            return Err(ExecutorError::ConfigError(
+                "没有匹配的目标虚拟机".to_string(),
+            ));
+        }
+
+        // 确定目标虚拟机
+        // 优先使用场景配置的 target_domain，否则尝试从 VDI 平台获取第一个运行中的虚拟机
+        let target_domain = if let Some(domain) = &scenario.target_domain {
+            domain.clone()
+        } else {
+            // 尝试从 VDI 平台获取第一个可用虚拟机
+            self.get_first_available_domain_from_vdi().await?
+        };
+
+        info!("目标虚拟机: {}", target_domain);
+
+        // 执行单个场景
+        self.run_single(scenario, &target_domain).await
+    }
+
+    /// 执行单个目标的场景 (核心执行逻辑)
+    async fn run_single(
+        &mut self,
+        scenario: &Scenario,
+        target_domain: &str,
+    ) -> Result<ExecutionReport> {
         let start_time = Instant::now();
         let mut report = ExecutionReport::new(&scenario.name);
 
@@ -117,6 +162,9 @@ impl ScenarioRunner {
         }
 
         report.tags = scenario.tags.clone();
+
+        // 设置输入通道类型
+        self.input_channel_type = scenario.input_channel.channel_type;
 
         // 检查是否需要验证 (任意步骤 verify=true 或配置了 verification)
         let needs_verification =
@@ -130,20 +178,16 @@ impl ScenarioRunner {
             }
         }
 
-        // 初始化协议连接 (如果指定了目标虚拟机)
-        if let Some(target_domain) = &scenario.target_domain {
-            if let Err(e) = self.initialize_protocols(scenario, target_domain).await {
-                error!("初始化协议失败: {}", e);
-                self.cleanup_verification_server().await;
-                return Err(e);
-            }
+        // 初始化协议连接
+        if let Err(e) = self.initialize_protocols(scenario, target_domain).await {
+            error!("初始化协议失败: {}", e);
+            self.cleanup_verification_server().await;
+            return Err(e);
         }
 
         // 在协议初始化完成后，通过 QGA 启动 guest-verifier
         if needs_verification {
-            if let (Some(verification_config), Some(target_domain)) =
-                (&scenario.verification, &scenario.target_domain)
-            {
+            if let Some(verification_config) = &scenario.verification {
                 if let Err(e) = self
                     .start_guest_verifier(verification_config, target_domain)
                     .await
@@ -226,7 +270,13 @@ impl ScenarioRunner {
 
         // 如果不是多目标场景，直接使用单目标执行
         if !selector.is_multi_target() {
-            let report = self.run(scenario).await?;
+            // 获取目标虚拟机
+            let target_domain = scenario
+                .target_domain
+                .clone()
+                .ok_or_else(|| ExecutorError::ConfigError("未指定目标虚拟机".to_string()))?;
+
+            let report = self.run_single(scenario, &target_domain).await?;
             return Ok(MultiTargetReport {
                 scenario_name: scenario.name.clone(),
                 total_targets: 1,
@@ -274,67 +324,49 @@ impl ScenarioRunner {
         let mut successful = 0;
         let mut failed = 0;
 
-        if parallel_config.enabled {
-            // 并行执行
-            reports = self
-                .run_parallel(scenario, &matched_domains, &parallel_config)
-                .await?;
-            for report in &reports {
-                if report.passed {
-                    successful += 1;
-                } else {
-                    failed += 1;
-                }
-            }
-        } else {
-            // 串行执行
-            for domain_name in &matched_domains {
-                info!("执行目标: {}", domain_name);
+        // 只支持串行执行，并行执行需要更复杂的处理（暂不支持）
+        // 串行执行
+        for domain_name in &matched_domains {
+            info!("执行目标: {}", domain_name);
 
-                // 创建临时场景，设置单个目标
-                let mut single_scenario = scenario.clone();
-                single_scenario.target_domain = Some(domain_name.clone());
-                single_scenario.target_domains = None;
+            let report = self.run_single(scenario, domain_name).await;
 
-                let report = self.run(&single_scenario).await;
-
-                match report {
-                    Ok(r) => {
-                        if r.passed {
-                            successful += 1;
-                        } else {
-                            failed += 1;
-                        }
-                        reports.push(r);
-
-                        // 检查失败策略
-                        if failed > 0 && failure_strategy == FailureStrategy::StopAll {
-                            warn!("检测到失败，根据策略停止所有执行");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        error!("执行失败: {} - {}", domain_name, e);
+            match report {
+                Ok(r) => {
+                    if r.passed {
+                        successful += 1;
+                    } else {
                         failed += 1;
+                    }
+                    reports.push(r);
 
-                        // 创建失败报告
-                        let failed_report = ExecutionReport {
-                            scenario_name: format!("{} ({})", scenario.name, domain_name),
-                            description: scenario.description.clone(),
-                            tags: scenario.tags.clone(),
-                            passed: false,
-                            steps_executed: 0,
-                            passed_count: 0,
-                            failed_count: 1,
-                            duration_ms: 0,
-                            steps: vec![],
-                        };
-                        reports.push(failed_report);
+                    // 检查失败策略
+                    if failed > 0 && failure_strategy == FailureStrategy::StopAll {
+                        warn!("检测到失败，根据策略停止所有执行");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("执行失败: {} - {}", domain_name, e);
+                    failed += 1;
 
-                        if failure_strategy == FailureStrategy::StopAll {
-                            warn!("检测到失败，根据策略停止所有执行");
-                            break;
-                        }
+                    // 创建失败报告
+                    let failed_report = ExecutionReport {
+                        scenario_name: format!("{} ({})", scenario.name, domain_name),
+                        description: scenario.description.clone(),
+                        tags: scenario.tags.clone(),
+                        passed: false,
+                        steps_executed: 0,
+                        passed_count: 0,
+                        failed_count: 1,
+                        duration_ms: 0,
+                        steps: vec![],
+                    };
+                    reports.push(failed_report);
+
+                    if failure_strategy == FailureStrategy::StopAll {
+                        warn!("检测到失败，根据策略停止所有执行");
+                        break;
                     }
                 }
             }
@@ -351,7 +383,100 @@ impl ScenarioRunner {
     }
 
     /// 获取可用虚拟机列表
-    async fn list_available_domains(&self, scenario: &Scenario) -> Result<Vec<String>> {
+    ///
+    /// 优先从 VDI 平台获取虚拟机列表，并保存虚拟机-主机映射到数据库
+    async fn list_available_domains(&mut self, scenario: &Scenario) -> Result<Vec<String>> {
+        // 优先使用 VDI 平台获取虚拟机列表
+        if let Some(vdi_client) = &self.vdi_client {
+            info!("从 VDI 平台获取虚拟机列表");
+
+            // 获取虚拟机列表（包含主机信息）
+            let domains = vdi_client.domain().list_running().await.map_err(|e| {
+                ExecutorError::TransportError(format!("VDI 获取虚拟机列表失败: {}", e))
+            })?;
+
+            // 获取主机列表
+            let hosts = vdi_client.host().list_all().await.map_err(|e| {
+                ExecutorError::TransportError(format!("VDI 获取主机列表失败: {}", e))
+            })?;
+
+            // 构建 host_id -> host_info 映射
+            let host_map: std::collections::HashMap<String, &serde_json::Value> = hosts
+                .iter()
+                .filter_map(|h| h["id"].as_str().map(|id| (id.to_string(), h)))
+                .collect();
+
+            // 先保存主机记录到数据库（满足外键约束）
+            if let Some(storage) = &self.storage {
+                let now = chrono::Utc::now();
+                for host_info in &hosts {
+                    if let Some(host_id) = host_info["id"].as_str() {
+                        let host_ip = host_info["ip"].as_str().unwrap_or("");
+                        let host_name = host_info["name"].as_str().unwrap_or(host_ip);
+                        let uri = format!("qemu+tcp://{}/system", host_ip);
+
+                        let host_record = atp_storage::HostRecord {
+                            id: host_id.to_string(),
+                            host: host_name.to_string(),
+                            uri,
+                            tags: None,
+                            metadata: None,
+                            created_at: now,
+                            updated_at: now,
+                        };
+
+                        if let Err(e) = storage.hosts().upsert(&host_record).await {
+                            warn!("保存主机记录失败: {} - {}", host_id, e);
+                        }
+                    }
+                }
+                debug!("保存了 {} 个主机记录到数据库", hosts.len());
+            }
+
+            let mut domain_names = Vec::new();
+            let mut mappings = Vec::new();
+
+            for domain in &domains {
+                if let Some(name) = domain["name"].as_str() {
+                    domain_names.push(name.to_string());
+
+                    // 提取主机信息
+                    if let Some(host_id) = domain["hostId"].as_str() {
+                        if let Some(host_info) = host_map.get(host_id) {
+                            let host_ip = host_info["ip"].as_str().unwrap_or("");
+                            let host_name = host_info["name"].as_str();
+                            // 从 VDI 平台获取操作系统类型
+                            let os_type = domain["osType"].as_str();
+
+                            mappings.push(atp_storage::DomainHostMappingRecord {
+                                domain_name: name.to_string(),
+                                host_id: host_id.to_string(),
+                                host_ip: host_ip.to_string(),
+                                host_name: host_name.map(|s| s.to_string()),
+                                os_type: os_type.map(|s| s.to_string()),
+                                updated_at: chrono::Utc::now(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 保存虚拟机-主机映射到数据库
+            if let Some(storage) = &self.storage {
+                if !mappings.is_empty() {
+                    if let Err(e) = storage.domain_host_mappings().upsert_batch(&mappings).await {
+                        warn!("保存虚拟机-主机映射失败: {}", e);
+                    } else {
+                        info!("保存了 {} 个虚拟机-主机映射到数据库", mappings.len());
+                    }
+                }
+            }
+
+            info!("从 VDI 平台获取到 {} 个运行中的虚拟机", domain_names.len());
+            return Ok(domain_names);
+        }
+
+        // 回退到传统方式
         let hosts = self.transport_manager.list_hosts().await;
         let host_id = scenario
             .target_host
@@ -372,142 +497,194 @@ impl ScenarioRunner {
         Ok(domains)
     }
 
-    /// 并行执行场景
-    async fn run_parallel(
-        &mut self,
-        scenario: &Scenario,
-        domains: &[String],
-        config: &crate::ParallelConfig,
-    ) -> Result<Vec<ExecutionReport>> {
-        use tokio::sync::Semaphore;
+    /// 从 VDI 平台获取第一个可用的运行中虚拟机
+    async fn get_first_available_domain_from_vdi(&self) -> Result<String> {
+        let vdi_client = self.vdi_client.as_ref().ok_or_else(|| {
+            ExecutorError::ConfigError("VDI 客户端未初始化，无法自动获取虚拟机".to_string())
+        })?;
 
-        let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
-        let mut handles = Vec::new();
+        info!("从 VDI 平台获取第一个运行中的虚拟机");
 
-        // 注意: 这里需要创建新的 runner 实例用于并行执行
-        // 因为当前 runner 有可变状态，不能在多个任务间共享
-        // 这是一个简化实现，实际应该使用更好的并发模型
+        let domains =
+            vdi_client.domain().list_running().await.map_err(|e| {
+                ExecutorError::TransportError(format!("VDI 获取虚拟机列表失败: {}", e))
+            })?;
 
-        for domain_name in domains {
-            let permit = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| ExecutorError::ConfigError("获取信号量失败".to_string()))?;
-
-            let domain = domain_name.clone();
-            let scenario = scenario.clone();
-            let transport_manager = Arc::clone(&self.transport_manager);
-            let protocol_registry = Arc::clone(&self.protocol_registry);
-            let storage = self.storage.clone();
-
-            let handle = tokio::spawn(async move {
-                let mut runner = ScenarioRunner::new(transport_manager, protocol_registry);
-                if let Some(s) = storage {
-                    runner = runner.with_storage(s);
-                }
-
-                let mut single_scenario = scenario;
-                single_scenario.target_domain = Some(domain.clone());
-                single_scenario.target_domains = None;
-
-                let result = runner.run(&single_scenario).await;
-                drop(permit);
-                result
-            });
-
-            handles.push(handle);
+        if domains.is_empty() {
+            return Err(ExecutorError::ConfigError(
+                "VDI 平台没有运行中的虚拟机".to_string(),
+            ));
         }
 
-        let mut reports = Vec::new();
-        for handle in handles {
-            match handle.await {
-                Ok(Ok(report)) => reports.push(report),
-                Ok(Err(e)) => {
-                    error!("并行任务执行失败: {}", e);
-                    // 创建失败报告
-                    reports.push(ExecutionReport {
-                        scenario_name: scenario.name.clone(),
-                        description: scenario.description.clone(),
-                        tags: scenario.tags.clone(),
-                        passed: false,
-                        steps_executed: 0,
-                        passed_count: 0,
-                        failed_count: 1,
-                        duration_ms: 0,
-                        steps: vec![],
-                    });
-                }
-                Err(e) => {
-                    error!("并行任务 panic: {}", e);
-                    reports.push(ExecutionReport {
-                        scenario_name: scenario.name.clone(),
-                        description: scenario.description.clone(),
-                        tags: scenario.tags.clone(),
-                        passed: false,
-                        steps_executed: 0,
-                        passed_count: 0,
-                        failed_count: 1,
-                        duration_ms: 0,
-                        steps: vec![],
-                    });
-                }
-            }
-        }
+        let first_domain = domains
+            .first()
+            .and_then(|d| d["name"].as_str())
+            .ok_or_else(|| ExecutorError::ConfigError("无法获取虚拟机名称".to_string()))?
+            .to_string();
 
-        Ok(reports)
+        info!("自动选择虚拟机: {}", first_domain);
+        Ok(first_domain)
     }
 
     /// 初始化协议连接
     async fn initialize_protocols(&mut self, scenario: &Scenario, domain_name: &str) -> Result<()> {
         info!("初始化协议连接: 虚拟机 = {}", domain_name);
 
-        // 获取目标主机的连接
-        let hosts = self.transport_manager.list_hosts().await;
-        let host_id = scenario
-            .target_host
-            .as_deref()
-            .or_else(|| hosts.first().map(String::as_str))
-            .ok_or_else(|| ExecutorError::ConfigError("未指定目标主机且无可用主机".to_string()))?;
+        // 获取目标主机
+        // 1. 优先使用场景配置的 target_host
+        // 2. 其次从数据库读取虚拟机-主机映射
+        // 3. 最后回退到 transport_manager 中的第一个主机
+        let host_id = if let Some(host) = &scenario.target_host {
+            host.clone()
+        } else if let Some(storage) = &self.storage {
+            // 从数据库读取虚拟机-主机映射
+            match storage
+                .domain_host_mappings()
+                .get_by_domain(domain_name)
+                .await
+            {
+                Ok(Some(mapping)) => {
+                    info!(
+                        "从数据库获取虚拟机 {} 的主机信息: {} ({})",
+                        domain_name, mapping.host_id, mapping.host_ip
+                    );
+
+                    // 确保主机已注册到 transport_manager
+                    let registered_hosts = self.transport_manager.list_hosts().await;
+                    if !registered_hosts
+                        .iter()
+                        .any(|h| h == &mapping.host_id || h == &mapping.host_ip)
+                    {
+                        // 动态注册主机
+                        info!("动态注册主机: {} ({})", mapping.host_id, mapping.host_ip);
+                        let uri = format!("qemu+tcp://{}/system", mapping.host_ip);
+                        let host_info = atp_transport::HostInfo {
+                            id: mapping.host_id.clone(),
+                            host: mapping
+                                .host_name
+                                .clone()
+                                .unwrap_or_else(|| mapping.host_ip.clone()),
+                            uri,
+                            tags: vec![],
+                            metadata: std::collections::HashMap::new(),
+                        };
+
+                        self.transport_manager
+                            .add_host(host_info)
+                            .await
+                            .map_err(|e| {
+                                ExecutorError::TransportError(format!("注册主机失败: {}", e))
+                            })?;
+
+                        // 等待连接建立（add_host 在后台建立连接）
+                        info!("等待主机连接建立...");
+                        let max_wait = Duration::from_secs(30);
+                        let start = Instant::now();
+                        let mut connected = false;
+
+                        while start.elapsed() < max_wait {
+                            // 尝试获取连接来检查是否已建立
+                            match self
+                                .transport_manager
+                                .execute_on_host(&mapping.host_id, |_conn| async move {
+                                    // 简单检查连接状态
+                                    Ok(())
+                                })
+                                .await
+                            {
+                                Ok(_) => {
+                                    connected = true;
+                                    info!("主机连接已建立: {}", mapping.host_id);
+                                    break;
+                                }
+                                Err(_) => {
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                }
+                            }
+                        }
+
+                        if !connected {
+                            return Err(ExecutorError::TransportError(format!(
+                                "等待主机 {} 连接超时",
+                                mapping.host_id
+                            )));
+                        }
+                    }
+
+                    mapping.host_id
+                }
+                Ok(None) => {
+                    warn!("数据库中未找到虚拟机 {} 的主机映射", domain_name);
+                    // 回退到 transport_manager 中的第一个主机
+                    let hosts = self.transport_manager.list_hosts().await;
+                    hosts.first().cloned().ok_or_else(|| {
+                        ExecutorError::ConfigError(format!(
+                            "未找到虚拟机 {} 的主机映射，且无可用主机",
+                            domain_name
+                        ))
+                    })?
+                }
+                Err(e) => {
+                    warn!("从数据库读取虚拟机-主机映射失败: {}", e);
+                    let hosts = self.transport_manager.list_hosts().await;
+                    hosts.first().cloned().ok_or_else(|| {
+                        ExecutorError::ConfigError("数据库读取失败且无可用主机".to_string())
+                    })?
+                }
+            }
+        } else {
+            // 回退到 transport_manager 中的第一个主机
+            let hosts = self.transport_manager.list_hosts().await;
+            hosts.first().cloned().ok_or_else(|| {
+                ExecutorError::ConfigError("未指定目标主机且无可用主机".to_string())
+            })?
+        };
 
         // 通过 transport manager 获取 domain
         let domain = self
             .transport_manager
-            .execute_on_host(
-                host_id,
-                |conn| async move { conn.get_domain(domain_name).await },
-            )
+            .execute_on_host(&host_id, |conn| async move {
+                conn.get_domain(domain_name).await
+            })
             .await
             .map_err(|e| ExecutorError::TransportError(e.to_string()))?;
 
-        // 初始化 QMP 协议
-        let mut qmp = QmpProtocol::new();
-        if let Err(e) = qmp.connect(&domain).await {
-            warn!("QMP 协议连接失败: {}", e);
-            // QMP 失败不是致命错误,可能虚拟机没有 QMP
-        } else {
-            info!("QMP 协议连接成功");
-            self.qmp_protocol = Some(qmp);
-        }
-
-        // 初始化 QGA 协议
+        // QGA 协议始终初始化（用于 guest-verifier 启动）
         let mut qga = QgaProtocol::new();
         if let Err(e) = qga.connect(&domain).await {
             warn!("QGA 协议连接失败: {}", e);
-            // QGA 失败不是致命错误,可能虚拟机没有安装 guest agent
+            // QGA 失败不是致命错误，可能虚拟机没有安装 guest agent
         } else {
             info!("QGA 协议连接成功");
             self.qga_protocol = Some(qga);
         }
 
-        // 初始化 SPICE 协议（用于鼠标操作）
-        let mut spice = SpiceProtocol::new();
-        if let Err(e) = spice.connect(&domain).await {
-            warn!("SPICE 协议连接失败: {}", e);
-            // SPICE 失败不是致命错误,可能虚拟机没有配置 SPICE
-        } else {
-            info!("SPICE 协议连接成功");
-            self.spice_protocol = Some(spice);
+        // 根据 input_channel 配置决定初始化 QMP 或 SPICE
+        match scenario.input_channel.channel_type {
+            InputChannelType::Qmp => {
+                info!("初始化 QMP 协议 (input_channel: qmp)");
+                let mut qmp = QmpProtocol::new();
+                if let Err(e) = qmp.connect(&domain).await {
+                    return Err(ExecutorError::ProtocolError(format!(
+                        "QMP 协议连接失败: {}",
+                        e
+                    )));
+                }
+                info!("QMP 协议连接成功");
+                self.qmp_protocol = Some(qmp);
+            }
+            InputChannelType::Spice => {
+                info!("初始化 SPICE 协议 (input_channel: spice)");
+                let mut spice = SpiceProtocol::new();
+                if let Err(e) = spice.connect(&domain).await {
+                    return Err(ExecutorError::ProtocolError(format!(
+                        "SPICE 协议连接失败: {}",
+                        e
+                    )));
+                }
+                info!("SPICE 协议连接成功");
+                self.spice_protocol = Some(spice);
+            }
         }
 
         self.current_domain = Some(domain);
@@ -596,53 +773,105 @@ impl ScenarioRunner {
     }
 
     /// 通过 QGA 启动 guest-verifier
+    ///
+    /// 该方法会：
+    /// 1. 从数据库获取 Guest OS 类型（由 VDI 平台提供）
+    /// 2. 从配置的网络接口获取宿主机 IP 地址
+    /// 3. 使用正确的启动命令启动 verifier-agent
     async fn start_guest_verifier(
         &self,
         config: &VerificationConfig,
-        _target_domain: &str,
+        target_domain: &str,
     ) -> Result<()> {
         let qga = self
             .qga_protocol
             .as_ref()
             .ok_or_else(|| ExecutorError::ProtocolError("QGA 协议未初始化".to_string()))?;
 
-        // 获取验证器路径
-        let verifier_path = config
-            .guest_verifier_path
-            .clone()
-            .unwrap_or_else(|| "/usr/local/bin/verifier-agent".to_string());
+        // 1. 从数据库获取 Guest OS 类型（由 VDI 平台提供）
+        let os_type = if let Some(storage) = &self.storage {
+            match storage
+                .domain_host_mappings()
+                .get_by_domain(target_domain)
+                .await
+            {
+                Ok(Some(mapping)) => {
+                    let os = Self::normalize_os_type(mapping.os_type.as_deref());
+                    info!("从数据库获取 Guest OS 类型: {} -> {}", target_domain, os);
+                    os
+                }
+                _ => {
+                    warn!(
+                        "数据库中未找到虚拟机 {} 的 OS 类型信息，假设为 Linux",
+                        target_domain
+                    );
+                    "linux".to_string()
+                }
+            }
+        } else {
+            warn!("数据库未初始化，假设为 Linux");
+            "linux".to_string()
+        };
 
-        // 获取验证服务器地址（需要 VM 能访问的地址）
-        let server_addr = config
+        // 2. 获取验证器路径（根据 OS 类型选择默认路径）
+        let verifier_path = config.guest_verifier_path.clone().unwrap_or_else(|| {
+            if os_type == "windows" {
+                "C:\\Program Files\\verifier-agent\\verifier-agent.exe".to_string()
+            } else {
+                "/usr/local/bin/verifier-agent".to_string()
+            }
+        });
+
+        // 3. 获取本机 IP 地址（从配置的网络接口读取）
+        let interface = config.host_interface.as_deref().unwrap_or("virbr0"); // 默认使用 libvirt 默认网桥
+        let host_ip = Self::get_interface_ip(interface);
+
+        // 4. 构建验证服务器地址
+        let ws_port = config
             .ws_addr
-            .clone()
-            .unwrap_or_else(|| "ws://host.local:8765".to_string());
+            .as_ref()
+            .and_then(|addr| addr.split(':').last())
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(8765);
 
-        // 构建启动命令
-        let command = format!(
-            "nohup {} --mode report --server {} > /tmp/verifier-agent.log 2>&1 &",
-            verifier_path, server_addr
+        let server_addr = format!("{}:{}", host_ip, ws_port);
+
+        info!(
+            "准备启动 guest-verifier: path={}, server={}, os={}, interface={}",
+            verifier_path, server_addr, os_type, interface
         );
 
-        info!("启动 guest-verifier: {}", command);
+        // 5. 构建启动参数
+        // verifier-agent 参数: --server <地址> --transport websocket --verifiers keyboard,mouse
+        let args = vec![
+            "--server".to_string(),
+            server_addr.clone(),
+            "--transport".to_string(),
+            "websocket".to_string(),
+            "--verifiers".to_string(),
+            "keyboard".to_string(),
+            "--verifiers".to_string(),
+            "mouse".to_string(),
+        ];
 
-        // 通过 QGA 执行命令
-        let status = qga
-            .exec_shell(&command)
-            .await
-            .map_err(|e| ExecutorError::ProtocolError(format!("QGA exec_shell 失败: {}", e)))?;
-
-        if let Some(exit_code) = status.exit_code {
-            if exit_code != 0 {
-                let stderr = status.decode_stderr().unwrap_or_default();
+        // 6. 使用跨平台方式启动后台程序
+        match qga.exec_background(&os_type, &verifier_path, &args).await {
+            Ok(pid) => {
+                if pid > 0 {
+                    info!("guest-verifier 已启动，PID: {}", pid);
+                } else {
+                    info!("guest-verifier 启动命令已执行");
+                }
+            }
+            Err(e) => {
                 return Err(ExecutorError::ProtocolError(format!(
-                    "guest-verifier 启动失败 ({}): {}",
-                    exit_code, stderr
+                    "启动 guest-verifier 失败: {}",
+                    e
                 )));
             }
         }
 
-        // 等待客户端连接
+        // 7. 等待客户端连接
         let connection_timeout = config.connection_timeout.unwrap_or(30);
         info!("等待 guest-verifier 连接 (超时: {}s)", connection_timeout);
 
@@ -660,6 +889,75 @@ impl ScenarioRunner {
         }
 
         Ok(())
+    }
+
+    /// 获取指定网络接口的 IP 地址
+    ///
+    /// # 参数
+    /// * `interface` - 网络接口名称 (例如: "virbr0", "br0", "eth0")
+    ///
+    /// # 返回
+    /// 返回接口的 IPv4 地址，如果获取失败则返回默认值 "192.168.122.1"
+    fn get_interface_ip(interface: &str) -> String {
+        #[cfg(target_os = "linux")]
+        {
+            use std::process::Command;
+
+            // 使用 ip addr show 获取接口 IP
+            if let Ok(output) = Command::new("ip")
+                .args(["addr", "show", interface])
+                .output()
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // 解析: inet 192.168.122.1/24 brd ...
+                for line in stdout.lines() {
+                    if let Some(inet_pos) = line.find("inet ") {
+                        let ip_start = inet_pos + 5;
+                        let ip_end = line[ip_start..]
+                            .find('/')
+                            .map(|p| ip_start + p)
+                            .unwrap_or(line.len());
+                        let ip = line[ip_start..ip_end].trim();
+                        if !ip.is_empty() && !ip.starts_with("127.") {
+                            info!("使用主机 IP: {} (来自接口 {})", ip, interface);
+                            return ip.to_string();
+                        }
+                    }
+                }
+            }
+
+            warn!("无法获取接口 {} 的 IP 地址", interface);
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            warn!("非 Linux 系统，无法获取接口 {} 的 IP 地址", interface);
+        }
+
+        // 默认返回 libvirt 默认网桥的常用地址
+        "192.168.122.1".to_string()
+    }
+
+    /// 将 VDI 平台的 osType 转换为标准化的操作系统类型
+    ///
+    /// VDI 平台 osType 可能的值：
+    /// - Windows: "xp-32", "win7-32", "win7-64", "win10-64", "win11-64"
+    /// - Linux: "linux", "kylin", "uos", "其他"
+    ///
+    /// 返回 "windows" 或 "linux"
+    fn normalize_os_type(os_type: Option<&str>) -> String {
+        match os_type {
+            Some(os) => {
+                let os_lower = os.to_lowercase();
+                if os_lower.starts_with("win") || os_lower.starts_with("xp") {
+                    "windows".to_string()
+                } else {
+                    // linux, kylin, uos, 其他 都视为 Linux
+                    "linux".to_string()
+                }
+            }
+            None => "linux".to_string(), // 默认假设为 Linux
+        }
     }
 
     /// 清理验证服务器
@@ -850,44 +1148,128 @@ impl ScenarioRunner {
 
     /// 执行发送按键
     async fn execute_send_key(&mut self, key: &str, index: usize) -> Result<StepReport> {
-        info!("发送按键: {}", key);
+        info!("发送按键: {} (通道: {:?})", key, self.input_channel_type);
 
-        // 使用 QMP 协议发送按键
-        if let Some(qmp) = &mut self.qmp_protocol {
-            qmp.send_key(key)
-                .await
-                .map_err(|e| ExecutorError::ProtocolError(format!("QMP send_key 失败: {}", e)))?;
+        match self.input_channel_type {
+            InputChannelType::Qmp => {
+                // 使用 QMP 协议发送按键
+                if let Some(qmp) = &mut self.qmp_protocol {
+                    qmp.send_key(key).await.map_err(|e| {
+                        ExecutorError::ProtocolError(format!("QMP send_key 失败: {}", e))
+                    })?;
 
-            Ok(StepReport::success(index, &format!("发送按键: {}", key)))
-        } else {
-            Err(ExecutorError::ProtocolError("QMP 协议未初始化".to_string()))
+                    Ok(StepReport::success(
+                        index,
+                        &format!("发送按键: {} (QMP)", key),
+                    ))
+                } else {
+                    Err(ExecutorError::ProtocolError("QMP 协议未初始化".to_string()))
+                }
+            }
+            InputChannelType::Spice => {
+                // 使用 SPICE 协议发送按键
+                if let Some(spice) = &self.spice_protocol {
+                    // 将 QKeyCode 转换为扫描码
+                    let scancode = qkeycode_to_scancode(key).ok_or_else(|| {
+                        ExecutorError::ProtocolError(format!("未知的按键: {}", key))
+                    })?;
+
+                    // 发送按下和释放
+                    spice.send_key(scancode, true).await.map_err(|e| {
+                        ExecutorError::ProtocolError(format!("SPICE key_down 失败: {}", e))
+                    })?;
+
+                    // 短暂延迟
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    spice.send_key(scancode, false).await.map_err(|e| {
+                        ExecutorError::ProtocolError(format!("SPICE key_up 失败: {}", e))
+                    })?;
+
+                    Ok(StepReport::success(
+                        index,
+                        &format!("发送按键: {} (SPICE)", key),
+                    ))
+                } else {
+                    Err(ExecutorError::ProtocolError(
+                        "SPICE 协议未初始化".to_string(),
+                    ))
+                }
+            }
         }
     }
 
     /// 执行发送文本
     async fn execute_send_text(&mut self, text: &str, index: usize) -> Result<StepReport> {
-        info!("发送文本: {}", text);
+        info!("发送文本: {} (通道: {:?})", text, self.input_channel_type);
 
-        // 使用 QMP 协议发送文本 (将文本拆分为按键序列)
-        if let Some(qmp) = &mut self.qmp_protocol {
-            // 将文本转换为按键序列，使用静态映射表避免内存泄漏
-            let keys: Vec<&str> = text.chars().filter_map(|c| char_to_qkeycode(c)).collect();
+        // 将文本转换为按键序列
+        let keys: Vec<&str> = text.chars().filter_map(char_to_qkeycode).collect();
 
-            if keys.is_empty() {
-                warn!("文本中没有可映射的字符: {}", text);
-                return Ok(StepReport::success(
-                    index,
-                    &format!("发送文本: {} (无可映射字符)", text),
-                ));
+        if keys.is_empty() {
+            warn!("文本中没有可映射的字符: {}", text);
+            return Ok(StepReport::success(
+                index,
+                &format!("发送文本: {} (无可映射字符)", text),
+            ));
+        }
+
+        match self.input_channel_type {
+            InputChannelType::Qmp => {
+                // 使用 QMP 协议发送文本
+                if let Some(qmp) = &mut self.qmp_protocol {
+                    qmp.send_keys(keys, Some(100)).await.map_err(|e| {
+                        ExecutorError::ProtocolError(format!("QMP send_keys 失败: {}", e))
+                    })?;
+
+                    Ok(StepReport::success(
+                        index,
+                        &format!("发送文本: {} [QMP]", text),
+                    ))
+                } else {
+                    Err(ExecutorError::ProtocolError("QMP 协议未初始化".to_string()))
+                }
             }
+            InputChannelType::Spice => {
+                // 使用 SPICE 协议发送文本
+                if let Some(spice) = &self.spice_protocol {
+                    for key in keys {
+                        // 将 QKeyCode 转换为 scancode
+                        if let Some(scancode) = qkeycode_to_scancode(key) {
+                            // 按下
+                            spice.send_key(scancode, true).await.map_err(|e| {
+                                ExecutorError::ProtocolError(format!(
+                                    "SPICE send_key (down) 失败: {}",
+                                    e
+                                ))
+                            })?;
 
-            qmp.send_keys(keys, Some(100))
-                .await
-                .map_err(|e| ExecutorError::ProtocolError(format!("QMP send_keys 失败: {}", e)))?;
+                            // 短暂延迟
+                            tokio::time::sleep(Duration::from_millis(50)).await;
 
-            Ok(StepReport::success(index, &format!("发送文本: {}", text)))
-        } else {
-            Err(ExecutorError::ProtocolError("QMP 协议未初始化".to_string()))
+                            // 释放
+                            spice.send_key(scancode, false).await.map_err(|e| {
+                                ExecutorError::ProtocolError(format!(
+                                    "SPICE send_key (up) 失败: {}",
+                                    e
+                                ))
+                            })?;
+
+                            // 按键间隔
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    }
+
+                    Ok(StepReport::success(
+                        index,
+                        &format!("发送文本: {} [SPICE]", text),
+                    ))
+                } else {
+                    Err(ExecutorError::ProtocolError(
+                        "SPICE 协议未初始化".to_string(),
+                    ))
+                }
+            }
         }
     }
 
@@ -1827,6 +2209,114 @@ fn char_to_qkeycode(c: char) -> Option<&'static str> {
         // 不支持的字符
         _ => {
             debug!("未映射的字符: {:?} (U+{:04X})", c, c as u32);
+            None
+        }
+    }
+}
+
+/// 将 QKeyCode 字符串转换为 PS/2 Set 1 扫描码 (用于 SPICE)
+///
+/// 返回 PS/2 Set 1 Make Code，用于 SPICE inputs 通道。
+/// 参考: https://wiki.osdev.org/PS/2_Keyboard#Scan_Code_Set_1
+fn qkeycode_to_scancode(key: &str) -> Option<u32> {
+    match key.to_lowercase().as_str() {
+        // 字母键 (a-z)
+        "a" => Some(0x1E),
+        "b" => Some(0x30),
+        "c" => Some(0x2E),
+        "d" => Some(0x20),
+        "e" => Some(0x12),
+        "f" => Some(0x21),
+        "g" => Some(0x22),
+        "h" => Some(0x23),
+        "i" => Some(0x17),
+        "j" => Some(0x24),
+        "k" => Some(0x25),
+        "l" => Some(0x26),
+        "m" => Some(0x32),
+        "n" => Some(0x31),
+        "o" => Some(0x18),
+        "p" => Some(0x19),
+        "q" => Some(0x10),
+        "r" => Some(0x13),
+        "s" => Some(0x1F),
+        "t" => Some(0x14),
+        "u" => Some(0x16),
+        "v" => Some(0x2F),
+        "w" => Some(0x11),
+        "x" => Some(0x2D),
+        "y" => Some(0x15),
+        "z" => Some(0x2C),
+
+        // 数字键 (0-9)
+        "0" => Some(0x0B),
+        "1" => Some(0x02),
+        "2" => Some(0x03),
+        "3" => Some(0x04),
+        "4" => Some(0x05),
+        "5" => Some(0x06),
+        "6" => Some(0x07),
+        "7" => Some(0x08),
+        "8" => Some(0x09),
+        "9" => Some(0x0A),
+
+        // 功能键
+        "esc" | "escape" => Some(0x01),
+        "ret" | "return" | "enter" => Some(0x1C),
+        "tab" => Some(0x0F),
+        "spc" | "space" => Some(0x39),
+        "backspace" => Some(0x0E),
+
+        // 标点符号
+        "minus" => Some(0x0C),
+        "equal" => Some(0x0D),
+        "bracket_left" => Some(0x1A),
+        "bracket_right" => Some(0x1B),
+        "backslash" => Some(0x2B),
+        "semicolon" => Some(0x27),
+        "apostrophe" => Some(0x28),
+        "grave_accent" => Some(0x29),
+        "comma" => Some(0x33),
+        "dot" => Some(0x34),
+        "slash" => Some(0x35),
+
+        // 修饰键
+        "shift" | "shift_l" => Some(0x2A),
+        "shift_r" => Some(0x36),
+        "ctrl" | "ctrl_l" => Some(0x1D),
+        "alt" | "alt_l" => Some(0x38),
+        "caps_lock" => Some(0x3A),
+
+        // F1-F12
+        "f1" => Some(0x3B),
+        "f2" => Some(0x3C),
+        "f3" => Some(0x3D),
+        "f4" => Some(0x3E),
+        "f5" => Some(0x3F),
+        "f6" => Some(0x40),
+        "f7" => Some(0x41),
+        "f8" => Some(0x42),
+        "f9" => Some(0x43),
+        "f10" => Some(0x44),
+        "f11" => Some(0x57),
+        "f12" => Some(0x58),
+
+        // 方向键 (Extended: 需要 0xE0 前缀，这里返回基础码)
+        "up" => Some(0x48),
+        "down" => Some(0x50),
+        "left" => Some(0x4B),
+        "right" => Some(0x4D),
+
+        // 其他
+        "insert" => Some(0x52),
+        "delete" => Some(0x53),
+        "home" => Some(0x47),
+        "end" => Some(0x4F),
+        "pgup" | "page_up" => Some(0x49),
+        "pgdn" | "page_down" => Some(0x51),
+
+        _ => {
+            debug!("未映射的 QKeyCode: {}", key);
             None
         }
     }

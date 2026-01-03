@@ -9,7 +9,7 @@ pub mod test_config;
 pub use scenario::{
     Scenario, ScenarioStep, Action, VerificationConfig,
     TargetSelector, TargetSelectorConfig, TargetMode,
-    ParallelConfig, FailureStrategy,
+    ParallelConfig, FailureStrategy, InputChannelConfig, InputChannelType,
 };
 pub use runner::{ScenarioRunner, ExecutionReport, StepReport, StepStatus, MultiTargetReport};
 pub use test_config::{TestConfig, VdiConfig};

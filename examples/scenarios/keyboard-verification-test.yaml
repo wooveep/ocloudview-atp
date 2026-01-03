@@ -7,23 +7,22 @@ description: "测试带验证的键盘输入功能 - 验证 Guest Agent 上报�
 # target_domain: "test-vm"
 
 # 方式2: 通配符匹配
-# target_domains: "test-*"
+target_domains: "win10*"
 
 # 方式3: 匹配所有虚拟机
 # target_domains:
 #   mode: all
 
 # 方式4: 高级选择器 (当前使用)
-target_domains:
-  mode: pattern
-  pattern: "test-*"
-  exclude:
-    - "test-template"
-    - "test-backup-*"
-  limit: 10
+# target_domains:
+#   mode: pattern
+#   pattern: "test-*"
+#   exclude:
+#     - "test-template"
+#     - "test-backup-*"
+#   limit: 10
 
-# 目标主机
-target_host: "host1"
+# 注意: target_host 已不再需要，系统会自动从 VDI 平台获取虚拟机所在的主机信息
 
 # 并行执行配置 (可选)
 parallel:
@@ -37,6 +36,18 @@ verification:
   tcp_addr: "0.0.0.0:8766"
   guest_verifier_path: "/usr/local/bin/verifier-agent"
   connection_timeout: 30
+  # 宿主机网络接口名称 (用于获取虚拟机可访问的 IP 地址)
+  # 常见值: virbr0 (libvirt 默认), br0 (桥接), eth0 (物理网卡)
+  host_interface: "ens33"
+
+# 输入通道配置
+input_channel:
+  # 输入通道类型: qmp (默认，通过 QEMU Monitor) 或 spice (通过 SPICE 输入通道)
+  channel_type: qmp
+  # 按键间隔时间 (毫秒)
+  key_delay_ms: 50
+  # 按键保持时间 (毫秒)
+  key_hold_ms: 100
 
 tags: ["keyboard", "verification", "integration"]
 

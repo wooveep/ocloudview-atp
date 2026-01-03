@@ -4,7 +4,7 @@
 //! 通过 libvirt 的 qemu_agent_command API 进行通信。
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
@@ -97,7 +97,7 @@ impl GuestExecCommand {
 
 impl GuestExecStatus {
     pub fn decode_stdout(&self) -> Option<String> {
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         self.out_data.as_ref().and_then(|data| {
             general_purpose::STANDARD
                 .decode(data)
@@ -107,13 +107,79 @@ impl GuestExecStatus {
     }
 
     pub fn decode_stderr(&self) -> Option<String> {
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         self.err_data.as_ref().and_then(|data| {
             general_purpose::STANDARD
                 .decode(data)
                 .ok()
                 .and_then(|bytes| String::from_utf8(bytes).ok())
         })
+    }
+}
+
+/// Guest 操作系统信息 (guest-get-osinfo 返回)
+#[derive(Debug, Deserialize)]
+pub struct GuestOsInfo {
+    /// 内核版本
+    #[serde(default, rename = "kernel-release")]
+    pub kernel_release: Option<String>,
+    /// 内核版本
+    #[serde(default, rename = "kernel-version")]
+    pub kernel_version: Option<String>,
+    /// 机器架构
+    #[serde(default)]
+    pub machine: Option<String>,
+    /// 操作系统 ID (如 "linux", "windows")
+    #[serde(default)]
+    pub id: Option<String>,
+    /// 操作系统名称
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 操作系统版本 ID
+    #[serde(default, rename = "version-id")]
+    pub version_id: Option<String>,
+    /// 操作系统版本
+    #[serde(default)]
+    pub version: Option<String>,
+    /// 操作系统 pretty 名称
+    #[serde(default, rename = "pretty-name")]
+    pub pretty_name: Option<String>,
+}
+
+impl GuestOsInfo {
+    /// 判断是否为 Linux 系统
+    pub fn is_linux(&self) -> bool {
+        self.id
+            .as_ref()
+            .map(|id| {
+                let id_lower = id.to_lowercase();
+                id_lower.contains("linux")
+                    || id_lower == "ubuntu"
+                    || id_lower == "debian"
+                    || id_lower == "centos"
+                    || id_lower == "fedora"
+                    || id_lower == "rhel"
+                    || id_lower == "arch"
+                    || id_lower == "opensuse"
+            })
+            .unwrap_or(false)
+    }
+
+    /// 判断是否为 Windows 系统
+    pub fn is_windows(&self) -> bool {
+        self.id
+            .as_ref()
+            .map(|id| id.to_lowercase().contains("windows") || id.to_lowercase() == "mswindows")
+            .unwrap_or(false)
+    }
+
+    /// 获取操作系统类型字符串 ("linux" 或 "windows")
+    pub fn os_type(&self) -> &str {
+        if self.is_windows() {
+            "windows"
+        } else {
+            "linux" // 默认假设为 Linux
+        }
     }
 }
 
@@ -253,9 +319,102 @@ impl QgaProtocol {
         info!("执行 Shell 命令: {}", shell_cmd);
 
         // 默认使用 Linux Shell
-        let cmd = GuestExecCommand::simple("/bin/sh", vec!["-c".to_string(), shell_cmd.to_string()]);
+        let cmd =
+            GuestExecCommand::simple("/bin/sh", vec!["-c".to_string(), shell_cmd.to_string()]);
 
         self.exec_and_wait(cmd).await
+    }
+
+    /// 跨平台执行后台程序
+    ///
+    /// 根据目标操作系统类型，使用适当的方式启动后台程序
+    ///
+    /// # 参数
+    /// * `os_type` - 操作系统类型 ("linux" 或 "windows")
+    /// * `program_path` - 程序路径
+    /// * `args` - 程序参数列表
+    ///
+    /// # 返回
+    /// 返回启动的进程 PID（对于后台进程可能不准确）
+    pub async fn exec_background(
+        &self,
+        os_type: &str,
+        program_path: &str,
+        args: &[String],
+    ) -> Result<i64> {
+        info!(
+            "启动后台程序: {} {} (OS: {})",
+            program_path,
+            args.join(" "),
+            os_type
+        );
+
+        let args_str = args.join(" ");
+
+        match os_type.to_lowercase().as_str() {
+            "linux" => {
+                // Linux: 使用 nohup 和 & 后台运行
+                let shell_cmd = format!(
+                    "nohup {} {} > /tmp/verifier-agent.log 2>&1 & echo $!",
+                    program_path, args_str
+                );
+                let cmd =
+                    GuestExecCommand::simple("/bin/sh", vec!["-c".to_string(), shell_cmd.clone()]);
+                let status = self.exec_and_wait(cmd).await?;
+
+                // 尝试从输出获取 PID
+                if let Some(stdout) = status.decode_stdout() {
+                    if let Ok(pid) = stdout.trim().parse::<i64>() {
+                        info!("后台进程已启动，PID: {}", pid);
+                        return Ok(pid);
+                    }
+                }
+
+                // 如果无法获取 PID，返回 0 表示已启动但 PID 未知
+                Ok(0)
+            }
+            "windows" => {
+                // Windows: 使用 PowerShell 的 Start-Process
+                let args_escaped = args
+                    .iter()
+                    .map(|a| format!("'{}'", a.replace('\'', "''")))
+                    .collect::<Vec<_>>()
+                    .join(",");
+
+                let powershell_cmd = format!(
+                    "$proc = Start-Process -FilePath '{}' -ArgumentList {} -PassThru -WindowStyle Hidden; $proc.Id",
+                    program_path.replace('\'', "''"),
+                    args_escaped
+                );
+
+                let cmd = GuestExecCommand::simple(
+                    "powershell.exe",
+                    vec!["-Command".to_string(), powershell_cmd],
+                );
+                let status = self.exec_and_wait(cmd).await?;
+
+                // 尝试从输出获取 PID
+                if let Some(stdout) = status.decode_stdout() {
+                    if let Ok(pid) = stdout.trim().parse::<i64>() {
+                        info!("后台进程已启动，PID: {}", pid);
+                        return Ok(pid);
+                    }
+                }
+
+                Ok(0)
+            }
+            _ => Err(ProtocolError::CommandFailed(format!(
+                "不支持的操作系统类型: {}",
+                os_type
+            ))),
+        }
+    }
+
+    /// 获取 Guest 操作系统信息
+    pub async fn get_os_info(&self) -> Result<GuestOsInfo> {
+        info!("获取 Guest 操作系统信息");
+        self.execute_command::<(), GuestOsInfo>("guest-get-osinfo", None)
+            .await
     }
 }
 
@@ -300,12 +459,10 @@ impl Protocol for QgaProtocol {
         let timeout = self.timeout;
         drop(domain_guard);
 
-        tokio::task::spawn_blocking(move || {
-            domain_clone.qemu_agent_command(&cmd_json, timeout, 0)
-        })
-        .await
-        .map_err(|e| ProtocolError::SendFailed(format!("任务执行失败: {}", e)))?
-        .map_err(|e| ProtocolError::SendFailed(format!("发送失败: {}", e)))?;
+        tokio::task::spawn_blocking(move || domain_clone.qemu_agent_command(&cmd_json, timeout, 0))
+            .await
+            .map_err(|e| ProtocolError::SendFailed(format!("任务执行失败: {}", e)))?
+            .map_err(|e| ProtocolError::SendFailed(format!("发送失败: {}", e)))?;
 
         Ok(())
     }

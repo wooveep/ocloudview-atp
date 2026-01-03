@@ -7,10 +7,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use atp_executor::{Scenario, ScenarioRunner};
-use atp_transport::{TransportManager, TransportConfig, HostInfo};
+use atp_executor::{Scenario, ScenarioRunner, TestConfig};
 use atp_protocol::ProtocolRegistry;
-use atp_storage::{StorageManager, Storage};
+use atp_storage::{Storage, StorageManager};
+use atp_transport::{HostInfo, TransportConfig, TransportManager};
+use atp_vdiplatform::{client::VdiConfig as VdiClientConfig, VdiClient};
 
 use crate::config::CliConfig;
 
@@ -29,13 +30,14 @@ async fn run_scenario(file: &str) -> Result<()> {
     spinner.set_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.green} {msg}")
-            .unwrap()
+            .unwrap(),
     );
     spinner.set_message(format!("加载场景: {}", file));
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let scenario = if path.extension().and_then(|s| s.to_str()) == Some("yaml") ||
-                      path.extension().and_then(|s| s.to_str()) == Some("yml") {
+    let scenario = if path.extension().and_then(|s| s.to_str()) == Some("yaml")
+        || path.extension().and_then(|s| s.to_str()) == Some("yml")
+    {
         Scenario::from_yaml_file(path)?
     } else if path.extension().and_then(|s| s.to_str()) == Some("json") {
         Scenario::from_json_file(path)?
@@ -43,7 +45,11 @@ async fn run_scenario(file: &str) -> Result<()> {
         anyhow::bail!("不支持的场景文件格式，仅支持 .yaml/.yml 或 .json");
     };
 
-    spinner.finish_with_message(format!("{} 场景加载成功: {}", "✓".green().bold(), scenario.name.cyan()));
+    spinner.finish_with_message(format!(
+        "{} 场景加载成功: {}",
+        "✓".green().bold(),
+        scenario.name.cyan()
+    ));
 
     // 显示场景信息
     println!();
@@ -61,13 +67,16 @@ async fn run_scenario(file: &str) -> Result<()> {
     spinner.set_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.green} {msg}")
-            .unwrap()
+            .unwrap(),
     );
     spinner.set_message("初始化传输管理器...");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    // 加载配置以获取主机信息
+    // 加载 CLI 配置
     let config = CliConfig::load()?;
+
+    // 加载测试配置 (包含 VDI 平台配置)
+    let test_config = TestConfig::load().ok();
 
     // 创建传输管理器
     let transport_config = TransportConfig::default();
@@ -76,11 +85,15 @@ async fn run_scenario(file: &str) -> Result<()> {
     // 添加配置的主机（这里简化处理，实际场景中应该根据需要选择主机）
     // 暂时添加所有配置的主机
     for (id, host_config) in config.hosts.iter() {
-        let uri = host_config.uri.clone()
+        let uri = host_config
+            .uri
+            .clone()
             .unwrap_or_else(|| format!("qemu+ssh://{}:22/system", host_config.host));
 
         let host_info = HostInfo::new(id, &host_config.host).with_uri(&uri);
-        transport_manager.add_host(host_info).await
+        transport_manager
+            .add_host(host_info)
+            .await
             .with_context(|| format!("添加主机 {} 失败", id))?;
     }
 
@@ -89,16 +102,56 @@ async fn run_scenario(file: &str) -> Result<()> {
 
     spinner.finish_with_message(format!("{} 传输管理器初始化完成", "✓".green().bold()));
 
+    // 初始化 VDI 客户端 (如果配置了 VDI 平台)
+    let vdi_client = if let Some(vdi_config) = test_config.as_ref().and_then(|c| c.vdi.as_ref()) {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        spinner.set_message("连接 VDI 平台...");
+        spinner.enable_steady_tick(Duration::from_millis(100));
+
+        match create_vdi_client(vdi_config).await {
+            Ok(client) => {
+                spinner.finish_with_message(format!("{} VDI 平台连接成功", "✓".green().bold()));
+                Some(Arc::new(client))
+            }
+            Err(e) => {
+                spinner.finish_with_message(format!(
+                    "{} VDI 平台连接失败: {}",
+                    "⚠".yellow().bold(),
+                    e
+                ));
+                None
+            }
+        }
+    } else {
+        println!(
+            "{}",
+            "提示: 未配置 VDI 平台，将使用本地主机配置".bright_black()
+        );
+        None
+    };
+
     // 初始化数据库存储
-    let storage_manager = StorageManager::new("~/.config/atp/data.db").await
+    let storage_manager = StorageManager::new("~/.config/atp/data.db")
+        .await
         .context("初始化数据库失败")?;
     let storage = Arc::new(Storage::from_manager(&storage_manager));
 
-    // 创建场景执行器 (with数据库支持)
+    // 创建场景执行器 (with数据库支持和VDI客户端)
     let mut runner = ScenarioRunner::new(
         Arc::clone(&transport_manager),
         Arc::clone(&protocol_registry),
-    ).with_storage(Arc::clone(&storage));
+    )
+    .with_storage(Arc::clone(&storage));
+
+    // 如果有 VDI 客户端，设置给 runner
+    if let Some(client) = vdi_client {
+        runner = runner.with_vdi_client(client);
+    }
 
     // 执行场景
     println!("\n{}\n", "开始执行场景...".bold());
@@ -108,7 +161,7 @@ async fn run_scenario(file: &str) -> Result<()> {
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
             .unwrap()
-            .progress_chars("=>-")
+            .progress_chars("=>-"),
     );
 
     let report = runner.run(&scenario).await?;
@@ -129,7 +182,10 @@ async fn run_scenario(file: &str) -> Result<()> {
     println!();
 
     println!("步骤统计:");
-    println!("  总步骤: {}", report.steps_executed.to_string().bright_blue());
+    println!(
+        "  总步骤: {}",
+        report.steps_executed.to_string().bright_blue()
+    );
     println!("  成功:   {}", report.passed_count.to_string().green());
     println!("  失败:   {}", report.failed_count.to_string().red());
     println!();
@@ -164,13 +220,17 @@ async fn run_scenario(file: &str) -> Result<()> {
             // 显示验证结果
             if let Some(verified) = step.verified {
                 let verify_icon = if verified { "✓".green() } else { "✗".red() };
-                let latency = step.verification_latency_ms
+                let latency = step
+                    .verification_latency_ms
                     .map(|ms| format!(" ({}ms)", ms))
                     .unwrap_or_default();
                 println!("   验证: {}{}", verify_icon, latency.bright_black());
             }
 
-            println!("   耗时: {} ms", step.duration_ms.to_string().bright_black());
+            println!(
+                "   耗时: {} ms",
+                step.duration_ms.to_string().bright_black()
+            );
             println!();
         }
     }
@@ -242,7 +302,10 @@ async fn list_scenarios() -> Result<()> {
     println!("找到 {} 个场景:\n", scenarios.len().to_string().green());
 
     for (path, scenario) in scenarios {
-        println!("{}", path.file_name().unwrap().to_str().unwrap().cyan().bold());
+        println!(
+            "{}",
+            path.file_name().unwrap().to_str().unwrap().cyan().bold()
+        );
         println!("  名称: {}", scenario.name);
 
         if let Some(desc) = &scenario.description {
@@ -259,4 +322,24 @@ async fn list_scenarios() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 创建并登录 VDI 客户端
+async fn create_vdi_client(vdi_config: &atp_executor::VdiConfig) -> Result<VdiClient> {
+    let client_config = VdiClientConfig {
+        connect_timeout: vdi_config.connect_timeout,
+        request_timeout: vdi_config.connect_timeout,
+        max_retries: 3,
+        verify_ssl: vdi_config.verify_ssl,
+    };
+
+    let mut client =
+        VdiClient::new(&vdi_config.base_url, client_config).context("创建VDI客户端失败")?;
+
+    client
+        .login(&vdi_config.username, &vdi_config.password)
+        .await
+        .context("VDI登录失败")?;
+
+    Ok(client)
 }

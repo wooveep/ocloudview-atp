@@ -226,6 +226,51 @@ pub enum TargetMode {
     Regex,
 }
 
+/// 输入通道类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum InputChannelType {
+    /// 使用 QMP 协议发送按键 (默认，通过 QEMU Monitor)
+    #[default]
+    Qmp,
+    /// 使用 SPICE 协议发送按键 (通过 SPICE 输入通道)
+    Spice,
+}
+
+/// 输入通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputChannelConfig {
+    /// 输入通道类型 (默认: qmp)
+    #[serde(default)]
+    pub channel_type: InputChannelType,
+
+    /// 按键间隔时间 (毫秒，默认: 50)
+    #[serde(default = "default_key_delay")]
+    pub key_delay_ms: u64,
+
+    /// 按键保持时间 (毫秒，默认: 100)
+    #[serde(default = "default_key_hold")]
+    pub key_hold_ms: u64,
+}
+
+fn default_key_delay() -> u64 {
+    50
+}
+
+fn default_key_hold() -> u64 {
+    100
+}
+
+impl Default for InputChannelConfig {
+    fn default() -> Self {
+        Self {
+            channel_type: InputChannelType::Qmp,
+            key_delay_ms: default_key_delay(),
+            key_hold_ms: default_key_hold(),
+        }
+    }
+}
+
 /// 验证服务器配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VerificationConfig {
@@ -248,6 +293,12 @@ pub struct VerificationConfig {
     /// 验证用的虚拟机 ID (可选，默认使用 target_domain)
     #[serde(default)]
     pub vm_id: Option<String>,
+
+    /// 宿主机网络接口名称 (用于获取虚拟机可访问的 IP 地址)
+    /// 例如: "virbr0", "br0", "eth0"
+    /// 默认: "virbr0" (libvirt 默认网桥)
+    #[serde(default)]
+    pub host_interface: Option<String>,
 }
 
 /// 测试场景
@@ -282,6 +333,10 @@ pub struct Scenario {
     /// 验证服务器配置 (可选,用于输入验证)
     #[serde(default)]
     pub verification: Option<VerificationConfig>,
+
+    /// 输入通道配置 (用于发送键盘/鼠标事件)
+    #[serde(default)]
+    pub input_channel: InputChannelConfig,
 
     /// 测试步骤
     pub steps: Vec<ScenarioStep>,
@@ -583,6 +638,7 @@ steps:
             target_domain: Some("test-vm".to_string()),
             target_domains: None,
             verification: None,
+            input_channel: InputChannelConfig::default(),
             tags: vec!["test".to_string()],
             parallel: None,
             steps: vec![ScenarioStep {
@@ -686,6 +742,7 @@ steps:
             target_domain: None,
             target_domains: Some(TargetSelector::pattern("web-*")),
             verification: None,
+            input_channel: InputChannelConfig::default(),
             steps: vec![],
             tags: vec![],
             parallel: None,
@@ -720,6 +777,7 @@ steps:
                 limit: Some(2),
             })),
             verification: None,
+            input_channel: InputChannelConfig::default(),
             steps: vec![],
             tags: vec![],
             parallel: None,

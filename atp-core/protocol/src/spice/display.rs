@@ -29,7 +29,7 @@ pub struct DisplayConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            pixmap_cache_size: 32 * 1024 * 1024, // 32MB
+            pixmap_cache_size: 32 * 1024 * 1024,         // 32MB
             glz_dictionary_window_size: 8 * 1024 * 1024, // 8MB
             preferred_compression: image_compression::AUTO_GLZ,
             preferred_video_codec: video_codec::VP8,
@@ -91,7 +91,13 @@ pub enum DisplayEvent {
     /// 显示器配置更新
     MonitorsConfig(Vec<MonitorConfig>),
     /// 绘图命令（简化表示）
-    DrawCommand { surface_id: u32, x: i32, y: i32, width: u32, height: u32 },
+    DrawCommand {
+        surface_id: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
 }
 
 /// Display 事件处理器
@@ -153,7 +159,9 @@ impl DisplayChannel {
         connection_id: u32,
         password: Option<&str>,
     ) -> Result<()> {
-        self.connection.connect(host, port, connection_id, password).await?;
+        self.connection
+            .connect(host, port, connection_id, password)
+            .await?;
 
         // 发送 Display 初始化消息
         self.send_init().await?;
@@ -251,7 +259,10 @@ impl DisplayChannel {
                         flags: create.flags,
                         is_primary: (create.flags & 1) != 0,
                     };
-                    debug!("Surface 创建: id={}, {}x{}", surface.id, surface.width, surface.height);
+                    debug!(
+                        "Surface 创建: id={}, {}x{}",
+                        surface.id, surface.width, surface.height
+                    );
                     self.surfaces.insert(surface.id, surface.clone());
                     Some(DisplayEvent::SurfaceCreated(surface))
                 } else {

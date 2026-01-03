@@ -2,8 +2,8 @@
 //!
 //! 定义 SPICE 协议中各通道使用的消息结构。
 
-use super::types::*;
 use super::constants::*;
+use super::types::*;
 
 /// Main 通道初始化消息 (服务器 -> 客户端)
 #[derive(Debug, Clone)]
@@ -207,7 +207,11 @@ pub struct MsgcInputsMouseMotion {
 
 impl MsgcInputsMouseMotion {
     pub fn new(dx: i32, dy: i32, buttons_state: u32) -> Self {
-        Self { dx, dy, buttons_state }
+        Self {
+            dx,
+            dy,
+            buttons_state,
+        }
     }
 
     pub fn to_bytes(&self) -> [u8; 12] {
@@ -234,7 +238,12 @@ pub struct MsgcInputsMousePosition {
 
 impl MsgcInputsMousePosition {
     pub fn new(x: u32, y: u32, buttons_state: u32, display_id: u8) -> Self {
-        Self { x, y, buttons_state, display_id }
+        Self {
+            x,
+            y,
+            buttons_state,
+            display_id,
+        }
     }
 
     pub fn to_bytes(&self) -> [u8; 13] {
@@ -258,7 +267,10 @@ pub struct MsgcInputsMousePress {
 
 impl MsgcInputsMousePress {
     pub fn new(button: u8, buttons_state: u32) -> Self {
-        Self { button, buttons_state }
+        Self {
+            button,
+            buttons_state,
+        }
     }
 
     pub fn to_bytes(&self) -> [u8; 5] {
@@ -280,7 +292,10 @@ pub struct MsgcInputsMouseRelease {
 
 impl MsgcInputsMouseRelease {
     pub fn new(button: u8, buttons_state: u32) -> Self {
-        Self { button, buttons_state }
+        Self {
+            button,
+            buttons_state,
+        }
     }
 
     pub fn to_bytes(&self) -> [u8; 5] {
@@ -355,18 +370,57 @@ impl MsgDisplayMonitorsConfig {
                 break;
             }
             monitors.push(MonitorConfig {
-                id: u32::from_le_bytes([bytes[offset], bytes[offset+1], bytes[offset+2], bytes[offset+3]]),
-                surface_id: u32::from_le_bytes([bytes[offset+4], bytes[offset+5], bytes[offset+6], bytes[offset+7]]),
-                width: u32::from_le_bytes([bytes[offset+8], bytes[offset+9], bytes[offset+10], bytes[offset+11]]),
-                height: u32::from_le_bytes([bytes[offset+12], bytes[offset+13], bytes[offset+14], bytes[offset+15]]),
-                x: i32::from_le_bytes([bytes[offset+16], bytes[offset+17], bytes[offset+18], bytes[offset+19]]),
-                y: i32::from_le_bytes([bytes[offset+20], bytes[offset+21], bytes[offset+22], bytes[offset+23]]),
-                flags: u32::from_le_bytes([bytes[offset+24], bytes[offset+25], bytes[offset+26], bytes[offset+27]]),
+                id: u32::from_le_bytes([
+                    bytes[offset],
+                    bytes[offset + 1],
+                    bytes[offset + 2],
+                    bytes[offset + 3],
+                ]),
+                surface_id: u32::from_le_bytes([
+                    bytes[offset + 4],
+                    bytes[offset + 5],
+                    bytes[offset + 6],
+                    bytes[offset + 7],
+                ]),
+                width: u32::from_le_bytes([
+                    bytes[offset + 8],
+                    bytes[offset + 9],
+                    bytes[offset + 10],
+                    bytes[offset + 11],
+                ]),
+                height: u32::from_le_bytes([
+                    bytes[offset + 12],
+                    bytes[offset + 13],
+                    bytes[offset + 14],
+                    bytes[offset + 15],
+                ]),
+                x: i32::from_le_bytes([
+                    bytes[offset + 16],
+                    bytes[offset + 17],
+                    bytes[offset + 18],
+                    bytes[offset + 19],
+                ]),
+                y: i32::from_le_bytes([
+                    bytes[offset + 20],
+                    bytes[offset + 21],
+                    bytes[offset + 22],
+                    bytes[offset + 23],
+                ]),
+                flags: u32::from_le_bytes([
+                    bytes[offset + 24],
+                    bytes[offset + 25],
+                    bytes[offset + 26],
+                    bytes[offset + 27],
+                ]),
             });
             offset += 28;
         }
 
-        Some(Self { count, max_allowed, monitors })
+        Some(Self {
+            count,
+            max_allowed,
+            monitors,
+        })
     }
 }
 
@@ -493,7 +547,9 @@ impl MsgUsbredirData {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self { data: bytes.to_vec() }
+        Self {
+            data: bytes.to_vec(),
+        }
     }
 }
 

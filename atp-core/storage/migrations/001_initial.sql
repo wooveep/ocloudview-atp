@@ -51,6 +51,17 @@ CREATE TABLE IF NOT EXISTS hosts (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 虚拟机-主机映射表
+CREATE TABLE IF NOT EXISTS domain_host_mappings (
+    domain_name TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL,
+    host_ip TEXT NOT NULL,
+    host_name TEXT,
+    os_type TEXT, -- 操作系统类型: win10-64, linux, kylin, uos 等
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE
+);
+
 -- 性能指标表
 CREATE TABLE IF NOT EXISTS connection_metrics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +88,8 @@ CREATE INDEX IF NOT EXISTS idx_scenarios_name ON scenarios(name);
 CREATE INDEX IF NOT EXISTS idx_scenarios_updated ON scenarios(updated_at);
 
 CREATE INDEX IF NOT EXISTS idx_hosts_host ON hosts(host);
+
+CREATE INDEX IF NOT EXISTS idx_domain_host_mappings_host ON domain_host_mappings(host_id);
 
 CREATE INDEX IF NOT EXISTS idx_metrics_host_time ON connection_metrics(host_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON connection_metrics(timestamp);

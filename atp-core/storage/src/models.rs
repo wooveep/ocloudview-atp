@@ -39,7 +39,7 @@ pub struct ScenarioRecord {
     pub id: i64,
     pub name: String,
     pub description: Option<String>,
-    pub definition: String, // JSON/YAML
+    pub definition: String,   // JSON/YAML
     pub tags: Option<String>, // JSON array
     pub version: i32,
     pub created_at: DateTime<Utc>,
@@ -52,7 +52,7 @@ pub struct HostRecord {
     pub id: String,
     pub host: String,
     pub uri: String,
-    pub tags: Option<String>, // JSON array
+    pub tags: Option<String>,     // JSON array
     pub metadata: Option<String>, // JSON object
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -69,6 +69,17 @@ pub struct ConnectionMetricRecord {
     pub total_requests: i64,
     pub total_errors: i64,
     pub avg_response_time: Option<f64>,
+}
+
+/// 虚拟机-主机映射数据库模型
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DomainHostMappingRecord {
+    pub domain_name: String,
+    pub host_id: String,
+    pub host_ip: String,
+    pub host_name: Option<String>,
+    pub os_type: Option<String>, // 操作系统类型: win10-64, linux, kylin, uos 等
+    pub updated_at: DateTime<Utc>,
 }
 
 /// 报告查询过滤器

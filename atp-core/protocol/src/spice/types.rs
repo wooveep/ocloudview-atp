@@ -170,13 +170,22 @@ impl SpiceLinkReply {
 
         let offset = pub_key_end;
         let num_common_caps = u32::from_le_bytes([
-            bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
         ]);
         let num_channel_caps = u32::from_le_bytes([
-            bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
         ]);
         let caps_offset = u32::from_le_bytes([
-            bytes[offset + 8], bytes[offset + 9], bytes[offset + 10], bytes[offset + 11]
+            bytes[offset + 8],
+            bytes[offset + 9],
+            bytes[offset + 10],
+            bytes[offset + 11],
         ]);
 
         // TODO: 解析能力列表
@@ -244,8 +253,7 @@ impl SpiceDataHeader {
         }
         Some(Self {
             serial: u64::from_le_bytes([
-                bytes[0], bytes[1], bytes[2], bytes[3],
-                bytes[4], bytes[5], bytes[6], bytes[7]
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]),
             msg_type: u16::from_le_bytes([bytes[8], bytes[9]]),
             size: u32::from_le_bytes([bytes[10], bytes[11], bytes[12], bytes[13]]),

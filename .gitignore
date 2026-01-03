@@ -36,6 +36,7 @@ build/
 *.dylib
 
 # 配置文件（本地覆盖）
+config/atp.toml
 config/local.toml
 .env
 .env.local

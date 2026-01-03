@@ -76,18 +76,14 @@ impl UsbFilter {
     pub fn is_allowed(&self, vendor_id: u16, product_id: u16) -> bool {
         // 先检查阻止列表
         for (v, p) in &self.block {
-            if (*v == -1 || *v == vendor_id as i32)
-                && (*p == -1 || *p == product_id as i32)
-            {
+            if (*v == -1 || *v == vendor_id as i32) && (*p == -1 || *p == product_id as i32) {
                 return false;
             }
         }
 
         // 再检查允许列表
         for (v, p) in &self.allow {
-            if (*v == -1 || *v == vendor_id as i32)
-                && (*p == -1 || *p == product_id as i32)
-            {
+            if (*v == -1 || *v == vendor_id as i32) && (*p == -1 || *p == product_id as i32) {
                 return true;
             }
         }
@@ -156,7 +152,9 @@ impl UsbRedirChannel {
         connection_id: u32,
         password: Option<&str>,
     ) -> Result<()> {
-        self.connection.connect(host, port, connection_id, password).await?;
+        self.connection
+            .connect(host, port, connection_id, password)
+            .await?;
         debug!("USB 重定向通道已连接");
         Ok(())
     }
@@ -182,16 +180,16 @@ impl UsbRedirChannel {
     pub async fn redirect_device(&mut self, mut device: UsbDevice) -> Result<u32> {
         if !self.connection.is_connected() {
             return Err(ProtocolError::ConnectionFailed(
-                "USB 重定向通道未连接".to_string()
+                "USB 重定向通道未连接".to_string(),
             ));
         }
 
         // 检查过滤器
         if !self.filter.is_allowed(device.vendor_id, device.product_id) {
-            return Err(ProtocolError::CommandFailed(
-                format!("设备 {:04x}:{:04x} 不在允许列表中",
-                        device.vendor_id, device.product_id)
-            ));
+            return Err(ProtocolError::CommandFailed(format!(
+                "设备 {:04x}:{:04x} 不在允许列表中",
+                device.vendor_id, device.product_id
+            )));
         }
 
         let device_id = self.next_device_id;
@@ -267,8 +265,10 @@ impl UsbRedirChannel {
         // usbredirparser_send_ep_info(host->parser, &ep_info);
         // ```
 
-        debug!("重定向设备: {} ({:04x}:{:04x})",
-               device.description, device.vendor_id, device.product_id);
+        debug!(
+            "重定向设备: {} ({:04x}:{:04x})",
+            device.description, device.vendor_id, device.product_id
+        );
 
         self.devices.insert(device_id, device);
         Ok(device_id)
@@ -300,22 +300,26 @@ impl UsbRedirChannel {
             debug!("停止设备重定向: {} ({})", device_id, device.description);
             Ok(())
         } else {
-            Err(ProtocolError::CommandFailed(
-                format!("设备 {} 未在重定向中", device_id)
-            ))
+            Err(ProtocolError::CommandFailed(format!(
+                "设备 {} 未在重定向中",
+                device_id
+            )))
         }
     }
 
     /// 发送数据到设备
     pub async fn send_data(&mut self, device_id: u32, data: &[u8]) -> Result<()> {
         if !self.devices.contains_key(&device_id) {
-            return Err(ProtocolError::CommandFailed(
-                format!("设备 {} 未在重定向中", device_id)
-            ));
+            return Err(ProtocolError::CommandFailed(format!(
+                "设备 {} 未在重定向中",
+                device_id
+            )));
         }
 
         let msg = MsgUsbredirData::new(data.to_vec());
-        self.connection.send_message(msg_usbredir::DATA, &msg.to_bytes()).await?;
+        self.connection
+            .send_message(msg_usbredir::DATA, &msg.to_bytes())
+            .await?;
 
         trace!("发送 USB 数据: device={}, {} bytes", device_id, data.len());
         Ok(())
@@ -435,9 +439,7 @@ mod tests {
 
     #[test]
     fn test_usb_filter_allow_all() {
-        let filter = UsbFilter::new()
-            .allow_all()
-            .block_device(0x1234, 0x5678);
+        let filter = UsbFilter::new().allow_all().block_device(0x1234, 0x5678);
 
         assert!(filter.is_allowed(0xAAAA, 0xBBBB));
         assert!(!filter.is_allowed(0x1234, 0x5678));

@@ -19,12 +19,8 @@ impl BackupManager {
     pub fn new(db_path: impl AsRef<Path>, backup_dir: Option<PathBuf>) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
 
-        let backup_dir = backup_dir.unwrap_or_else(|| {
-            db_path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("backups")
-        });
+        let backup_dir = backup_dir
+            .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).join("backups"));
 
         // 确保备份目录存在
         fs::create_dir_all(&backup_dir)
@@ -72,7 +68,11 @@ impl BackupManager {
     /// # 参数
     /// - `backup_path`: 备份文件路径
     /// - `create_backup_before_restore`: 恢复前是否先备份当前数据库
-    pub fn restore(&self, backup_path: impl AsRef<Path>, create_backup_before_restore: bool) -> Result<()> {
+    pub fn restore(
+        &self,
+        backup_path: impl AsRef<Path>,
+        create_backup_before_restore: bool,
+    ) -> Result<()> {
         let backup_path = backup_path.as_ref();
 
         // 检查备份文件是否存在
@@ -142,8 +142,7 @@ impl BackupManager {
             anyhow::bail!("备份文件必须在备份目录中: {:?}", backup_path);
         }
 
-        fs::remove_file(backup_path)
-            .with_context(|| format!("删除备份失败: {:?}", backup_path))?;
+        fs::remove_file(backup_path).with_context(|| format!("删除备份失败: {:?}", backup_path))?;
 
         info!("已删除备份: {:?}", backup_path);
         Ok(())
@@ -157,7 +156,11 @@ impl BackupManager {
         let mut backups = self.list_backups()?;
 
         if backups.len() <= keep_count {
-            info!("备份数量({})未超过保留数量({}),无需清理", backups.len(), keep_count);
+            info!(
+                "备份数量({})未超过保留数量({}),无需清理",
+                backups.len(),
+                keep_count
+            );
             return Ok(0);
         }
 
@@ -171,7 +174,10 @@ impl BackupManager {
             }
         }
 
-        info!("已清理 {} 个旧备份,保留 {} 个最新备份", deleted_count, keep_count);
+        info!(
+            "已清理 {} 个旧备份,保留 {} 个最新备份",
+            deleted_count, keep_count
+        );
         Ok(deleted_count)
     }
 

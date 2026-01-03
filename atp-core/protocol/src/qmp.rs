@@ -1,13 +1,11 @@
 //! QMP (QEMU Machine Protocol) 协议实现
 //!
 //! QMP 是 QEMU 的机器协议，用于管理和监控虚拟机。
-//! 通过 Unix Socket 连接到 QEMU 的 monitor 接口。
+//! 通过 libvirt 的 `qemu_monitor_command` API 进行通信，支持远程连接。
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
-use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 use virt::domain::Domain;
@@ -45,38 +43,12 @@ pub struct QmpError {
     pub desc: String,
 }
 
-/// QMP 问候信息 (Greeting)
-#[derive(Debug, Deserialize)]
-pub struct QmpGreeting {
-    #[serde(rename = "QMP")]
-    pub qmp: QmpInfo,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct QmpInfo {
-    pub version: QmpVersion,
-    pub capabilities: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct QmpVersion {
-    pub qemu: QemuVersion,
-    pub package: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct QemuVersion {
-    pub major: u32,
-    pub minor: u32,
-    pub micro: u32,
-}
-
 /// QMP 按键定义
 #[derive(Debug, Serialize)]
 pub struct QmpKey {
     #[serde(rename = "type")]
     pub key_type: String, // "qcode"
-    pub data: String,     // QKeyCode 字符串，如 "a", "shift", "ret"
+    pub data: String, // QKeyCode 字符串，如 "a", "shift", "ret"
 }
 
 impl QmpKey {
@@ -102,13 +74,12 @@ pub struct SendKeyArgs {
 // ============================================================================
 
 /// QMP 协议实现
+///
+/// 通过 libvirt 的 `qemu_monitor_command` API 发送 QMP 命令，
+/// 支持本地和远程 libvirt 连接。
 pub struct QmpProtocol {
-    /// 写入端（用Arc<Mutex>包装以支持可变访问）
-    writer: Option<Arc<Mutex<WriteHalf<UnixStream>>>>,
-    /// 读取端（用Arc<Mutex>包装以支持可变访问）
-    reader: Option<Arc<Mutex<BufReader<ReadHalf<UnixStream>>>>>,
-    /// QMP Socket 路径
-    socket_path: Option<String>,
+    /// Domain 引用（用 Arc<Mutex> 包装）
+    domain: Option<Arc<Mutex<Domain>>>,
     /// 连接状态
     connected: bool,
 }
@@ -116,63 +87,46 @@ pub struct QmpProtocol {
 impl QmpProtocol {
     pub fn new() -> Self {
         Self {
-            writer: None,
-            reader: None,
-            socket_path: None,
+            domain: None,
             connected: false,
         }
     }
 
     /// 执行 QMP 命令
-    pub async fn execute_command(&mut self, cmd: &QmpCommand<'_>) -> Result<QmpResponse> {
+    pub async fn execute_command(&self, cmd: &QmpCommand<'_>) -> Result<QmpResponse> {
         if !self.connected {
-            return Err(ProtocolError::ConnectionFailed(
-                "QMP 未连接".to_string(),
-            ));
+            return Err(ProtocolError::ConnectionFailed("QMP 未连接".to_string()));
         }
 
-        let writer = self
-            .writer
+        let domain_guard = self
+            .domain
             .as_ref()
-            .ok_or_else(|| ProtocolError::ConnectionFailed("Writer 不可用".to_string()))?;
+            .ok_or_else(|| ProtocolError::ConnectionFailed("Domain 不可用".to_string()))?;
 
-        let reader = self
-            .reader
-            .as_ref()
-            .ok_or_else(|| ProtocolError::ConnectionFailed("Reader 不可用".to_string()))?;
+        // 序列化命令
+        let cmd_json =
+            serde_json::to_string(cmd).map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
 
-        // 序列化并发送命令
-        let cmd_json = serde_json::to_string(cmd)
-            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
+        debug!("发送 QMP 命令 (via libvirt): {}", cmd_json);
 
-        debug!("发送 QMP 命令: {}", cmd_json);
+        // 通过 libvirt 发送命令（在阻塞任务中执行）
+        let domain_guard = domain_guard.lock().await;
+        let domain_clone = domain_guard.clone();
+        drop(domain_guard);
 
-        let mut writer_guard = writer.lock().await;
-        writer_guard
-            .write_all(cmd_json.as_bytes())
-            .await
-            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        writer_guard
-            .write_all(b"\n")
-            .await
-            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        writer_guard
-            .flush()
-            .await
-            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        drop(writer_guard);
+        let response_json = tokio::task::spawn_blocking(move || {
+            // flags = 0 表示使用默认行为
+            domain_clone.qemu_monitor_command(&cmd_json, 0)
+        })
+        .await
+        .map_err(|e| ProtocolError::CommandFailed(format!("任务执行失败: {}", e)))?
+        .map_err(|e| ProtocolError::CommandFailed(format!("QMP 命令失败: {}", e)))?;
 
-        // 读取响应
-        let mut reader_guard = reader.lock().await;
-        let mut response_line = String::new();
-        reader_guard
-            .read_line(&mut response_line)
-            .await
-            .map_err(|e| ProtocolError::ReceiveFailed(e.to_string()))?;
-        drop(reader_guard);
+        debug!("收到 QMP 响应: {}", response_json);
 
-        let response: QmpResponse = serde_json::from_str(&response_line)
-            .map_err(|e| ProtocolError::ParseError(e.to_string()))?;
+        // 解析响应
+        let response: QmpResponse = serde_json::from_str(&response_json)
+            .map_err(|e| ProtocolError::ParseError(format!("解析响应失败: {}", e)))?;
 
         // 检查错误
         if let Some(error) = &response.error {
@@ -182,7 +136,6 @@ impl QmpProtocol {
             )));
         }
 
-        debug!("收到 QMP 响应: {:?}", response);
         Ok(response)
     }
 
@@ -197,10 +150,11 @@ impl QmpProtocol {
 
         let cmd = QmpCommand {
             execute: "send-key",
-            arguments: Some(serde_json::to_value(args).map_err(|e| {
-                ProtocolError::SendFailed(format!("序列化参数失败: {}", e))
-            })?),
-            id: Some("send-key"),
+            arguments: Some(
+                serde_json::to_value(args)
+                    .map_err(|e| ProtocolError::SendFailed(format!("序列化参数失败: {}", e)))?,
+            ),
+            id: None, // libvirt passthrough 不支持 id 字段
         };
 
         self.execute_command(&cmd).await?;
@@ -213,38 +167,25 @@ impl QmpProtocol {
     }
 
     /// 查询 QMP 版本
-    pub async fn query_version(&mut self) -> Result<QmpResponse> {
+    pub async fn query_version(&self) -> Result<QmpResponse> {
         let cmd = QmpCommand {
             execute: "query-version",
             arguments: None,
-            id: Some("query-version"),
+            id: None, // libvirt passthrough 不支持 id 字段
         };
 
         self.execute_command(&cmd).await
     }
 
     /// 查询虚拟机状态
-    pub async fn query_status(&mut self) -> Result<QmpResponse> {
+    pub async fn query_status(&self) -> Result<QmpResponse> {
         let cmd = QmpCommand {
             execute: "query-status",
             arguments: None,
-            id: Some("query-status"),
+            id: None, // libvirt passthrough 不支持 id 字段
         };
 
         self.execute_command(&cmd).await
-    }
-
-    /// 协商 QMP 能力
-    async fn negotiate_capabilities(&mut self) -> Result<()> {
-        let cmd = QmpCommand {
-            execute: "qmp_capabilities",
-            arguments: None,
-            id: Some("init"),
-        };
-
-        self.execute_command(&cmd).await?;
-        info!("QMP 能力协商完成");
-        Ok(())
     }
 }
 
@@ -257,122 +198,84 @@ impl Default for QmpProtocol {
 #[async_trait]
 impl Protocol for QmpProtocol {
     async fn connect(&mut self, domain: &Domain) -> Result<()> {
-        // 从 Domain 获取 QMP Socket 路径
-        // 通常位于 /var/lib/libvirt/qemu/domain-{id}-{name}/monitor.sock
-        let domain_name = domain
-            .get_name()
-            .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
+        info!("通过 libvirt passthrough 连接 QMP");
 
-        // 尝试构建 socket 路径
-        // 注意：这是一个简化的实现，实际可能需要从 libvirt XML 中读取
-        let socket_path = format!("/var/lib/libvirt/qemu/domain-*-{}/monitor.sock", domain_name);
+        // 克隆 domain（libvirt Domain 支持 clone）
+        let domain_clone = domain.clone();
 
-        info!("连接到 QMP Socket: {}", socket_path);
+        // 验证 domain 支持 QMP - 发送 query-status 测试
+        // 注意：libvirt qemu_monitor_command 不支持 id 字段
+        let test_cmd = QmpCommand {
+            execute: "query-status",
+            arguments: None,
+            id: None, // libvirt passthrough 不支持 id 字段
+        };
 
-        // 由于路径包含通配符，我们需要展开它
-        // 这里简化处理，实际应该使用 glob 或从 XML 读取
-        // 为了演示，我们假设路径是已知的或通过其他方式获取
+        let cmd_json = serde_json::to_string(&test_cmd)
+            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
 
-        // TODO: 实现真实的 socket 路径解析
+        // 同步调用测试
+        let test_domain = domain.clone();
+        let result =
+            tokio::task::spawn_blocking(move || test_domain.qemu_monitor_command(&cmd_json, 0))
+                .await
+                .map_err(|e| ProtocolError::ConnectionFailed(format!("QMP 测试任务失败: {}", e)))?;
 
-        // 暂时存储 socket 路径用于后续重连
-        self.socket_path = Some(socket_path.clone());
+        match result {
+            Ok(response) => {
+                debug!("QMP 测试响应: {}", response);
+                info!("QMP (via libvirt) 连接成功");
+            }
+            Err(e) => {
+                return Err(ProtocolError::ConnectionFailed(format!(
+                    "QMP 不可用: {} (确保虚拟机正在运行且支持 QMP)",
+                    e
+                )));
+            }
+        }
 
-        // 建立 Unix Socket 连接
-        let stream = UnixStream::connect(&socket_path)
-            .await
-            .map_err(|e| {
-                ProtocolError::ConnectionFailed(format!("无法连接到 QMP Socket: {}", e))
-            })?;
-
-        // 分离读写端
-        let (read_half, write_half) = tokio::io::split(stream);
-        let mut reader = BufReader::new(read_half);
-
-        // 读取 QMP 问候信息
-        let mut greeting_line = String::new();
-        reader
-            .read_line(&mut greeting_line)
-            .await
-            .map_err(|e| ProtocolError::ConnectionFailed(format!("读取问候信息失败: {}", e)))?;
-
-        let greeting: QmpGreeting = serde_json::from_str(&greeting_line)
-            .map_err(|e| ProtocolError::ConnectionFailed(format!("解析问候信息失败: {}", e)))?;
-
-        info!(
-            "已连接到 QEMU {}.{}.{}",
-            greeting.qmp.version.qemu.major,
-            greeting.qmp.version.qemu.minor,
-            greeting.qmp.version.qemu.micro
-        );
-
-        self.writer = Some(Arc::new(Mutex::new(write_half)));
-        self.reader = Some(Arc::new(Mutex::new(reader)));
+        self.domain = Some(Arc::new(Mutex::new(domain_clone)));
         self.connected = true;
-
-        // 发送 qmp_capabilities 进入命令模式
-        self.negotiate_capabilities().await?;
 
         Ok(())
     }
 
     async fn send(&mut self, data: &[u8]) -> Result<()> {
         if !self.connected {
-            return Err(ProtocolError::ConnectionFailed(
-                "QMP 未连接".to_string(),
-            ));
+            return Err(ProtocolError::ConnectionFailed("QMP 未连接".to_string()));
         }
 
-        let writer = self
-            .writer
+        let domain_guard = self
+            .domain
             .as_ref()
-            .ok_or_else(|| ProtocolError::ConnectionFailed("Writer 不可用".to_string()))?;
+            .ok_or_else(|| ProtocolError::ConnectionFailed("Domain 不可用".to_string()))?;
 
-        let mut writer_guard = writer.lock().await;
-        writer_guard
-            .write_all(data)
+        let cmd_json = String::from_utf8(data.to_vec())
+            .map_err(|e| ProtocolError::SendFailed(format!("数据不是有效的 UTF-8: {}", e)))?;
+
+        let domain_guard = domain_guard.lock().await;
+        let domain_clone = domain_guard.clone();
+        drop(domain_guard);
+
+        tokio::task::spawn_blocking(move || domain_clone.qemu_monitor_command(&cmd_json, 0))
             .await
-            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        writer_guard
-            .write_all(b"\n")
-            .await
-            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        writer_guard
-            .flush()
-            .await
-            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
+            .map_err(|e| ProtocolError::SendFailed(format!("任务执行失败: {}", e)))?
+            .map_err(|e| ProtocolError::SendFailed(format!("发送失败: {}", e)))?;
 
         Ok(())
     }
 
     async fn receive(&mut self) -> Result<Vec<u8>> {
-        if !self.connected {
-            return Err(ProtocolError::ConnectionFailed(
-                "QMP 未连接".to_string(),
-            ));
-        }
-
-        let reader = self
-            .reader
-            .as_ref()
-            .ok_or_else(|| ProtocolError::ConnectionFailed("Reader 不可用".to_string()))?;
-
-        let mut reader_guard = reader.lock().await;
-        let mut line = String::new();
-        reader_guard
-            .read_line(&mut line)
-            .await
-            .map_err(|e| ProtocolError::ReceiveFailed(e.to_string()))?;
-
-        Ok(line.into_bytes())
+        // QMP 通过 libvirt 是请求-响应模式，不支持单独的 receive
+        // 这里返回错误，实际的接收在 execute_command 中处理
+        Err(ProtocolError::CommandFailed(
+            "QMP (via libvirt) 不支持独立的 receive 操作，请使用 execute_command".to_string(),
+        ))
     }
 
     async fn disconnect(&mut self) -> Result<()> {
-        self.writer = None;
-        self.reader = None;
+        self.domain = None;
         self.connected = false;
-        self.socket_path = None;
-
         info!("QMP 连接已断开");
         Ok(())
     }
@@ -435,5 +338,12 @@ mod tests {
 
         let json = serde_json::to_string(&args).unwrap();
         assert!(json.contains("\"hold-time\":100"));
+    }
+
+    #[test]
+    fn test_qmp_protocol_creation() {
+        let protocol = QmpProtocol::new();
+        assert!(!protocol.connected);
+        assert!(protocol.domain.is_none());
     }
 }

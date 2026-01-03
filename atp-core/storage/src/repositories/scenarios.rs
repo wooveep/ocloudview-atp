@@ -42,7 +42,10 @@ impl ScenarioRepository {
         })?;
 
         let scenario_id = result.last_insert_rowid();
-        debug!("Created scenario '{}' with ID: {}", scenario.name, scenario_id);
+        debug!(
+            "Created scenario '{}' with ID: {}",
+            scenario.name, scenario_id
+        );
 
         Ok(scenario_id)
     }

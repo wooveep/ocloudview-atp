@@ -1,13 +1,13 @@
-# ATP 测试配置示例文件
+# ATP 配置示例文件
 #
 # 配置文件搜索路径 (按优先级):
 # 1. ATP_TEST_CONFIG 环境变量指定的路径
-# 2. ./test.toml (当前目录)
-# 3. ./tests/config.toml (tests 目录)
-# 4. ~/.config/atp/test.toml (用户配置目录)
-# 5. /etc/atp/test.toml (系统配置目录)
+# 2. ./config/atp.toml (config 目录)
+# 3. ~/.config/atp/atp.toml (用户配置目录)
+# 4. /etc/atp/atp.toml (系统配置目录)
 #
 # 环境变量可以覆盖配置文件中的值
+
 
 # ============================================
 # 环境配置

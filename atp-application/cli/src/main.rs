@@ -324,7 +324,7 @@ pub enum VdiAction {
     /// 验证 VDI 平台与 libvirt 虚拟机状态一致性
     Verify {
         /// 配置文件路径
-        #[arg(short, long, default_value = "test.toml")]
+        #[arg(short, long, default_value = "config/atp.toml")]
         config: String,
 
         /// 只显示不一致的虚拟机
@@ -339,14 +339,14 @@ pub enum VdiAction {
     /// 列出 VDI 平台的所有主机
     ListHosts {
         /// 配置文件路径
-        #[arg(short, long, default_value = "test.toml")]
+        #[arg(short, long, default_value = "config/atp.toml")]
         config: String,
     },
 
     /// 列出 VDI 平台的所有虚拟机
     ListVms {
         /// 配置文件路径
-        #[arg(short, long, default_value = "test.toml")]
+        #[arg(short, long, default_value = "config/atp.toml")]
         config: String,
 
         /// 主机名过滤
@@ -357,7 +357,7 @@ pub enum VdiAction {
     /// 同步 VDI 主机到本地配置
     SyncHosts {
         /// 配置文件路径
-        #[arg(short, long, default_value = "test.toml")]
+        #[arg(short, long, default_value = "config/atp.toml")]
         config: String,
 
         /// 自动连接测试
@@ -368,7 +368,7 @@ pub enum VdiAction {
     /// 查询虚拟机磁盘存储位置（支持 Gluster 分布式存储定位）
     DiskLocation {
         /// 配置文件路径
-        #[arg(short, long, default_value = "test.toml")]
+        #[arg(short, long, default_value = "config/atp.toml")]
         config: String,
 
         /// 虚拟机 ID 或名称
@@ -402,7 +402,7 @@ pub enum PowerShellAction {
     /// 执行 PowerShell 命令 (通过 QGA 协议)
     Exec {
         /// 配置文件路径
-        #[arg(short, long, default_value = "test.toml")]
+        #[arg(short, long, default_value = "config/atp.toml")]
         config: String,
 
         /// 目标虚拟机名称（单个）
@@ -441,7 +441,7 @@ pub enum PowerShellAction {
     /// 列出可用的虚拟机
     ListVms {
         /// 配置文件路径
-        #[arg(short, long, default_value = "test.toml")]
+        #[arg(short, long, default_value = "config/atp.toml")]
         config: String,
 
         /// 按主机过滤
