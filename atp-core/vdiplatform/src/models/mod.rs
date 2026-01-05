@@ -1140,3 +1140,186 @@ impl std::fmt::Display for StorageType {
         write!(f, "{}", self.display_name())
     }
 }
+
+// ============================================
+// 组织单位相关数据结构
+// ============================================
+
+/// 组织单位/部门信息（对应 VDI API UserGroupVO）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserGroup {
+    /// 组织单位 ID
+    #[serde(default)]
+    pub id: String,
+
+    /// 组织单位名称
+    #[serde(default, alias = "ou")]
+    pub ou: String,
+
+    /// 组织层级结构，唯一标识 (如 "ou=研发部,ou=公司")
+    #[serde(default)]
+    pub distinguished_name: String,
+
+    /// 父组织
+    #[serde(default)]
+    pub parent: Option<String>,
+
+    /// LDAP 开关设置值
+    #[serde(default)]
+    pub ldap_open: Option<String>,
+
+    /// 组织类型
+    #[serde(default)]
+    pub ldap_type: Option<String>,
+
+    /// 子部门列表
+    #[serde(default)]
+    pub list: Vec<UserGroup>,
+}
+
+impl UserGroup {
+    /// 按名称查找组织单位（递归搜索）
+    pub fn find_by_name(&self, name: &str) -> Option<&UserGroup> {
+        if self.ou == name {
+            return Some(self);
+        }
+        for child in &self.list {
+            if let Some(found) = child.find_by_name(name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// 获取所有组织单位（扁平化）
+    pub fn flatten(&self) -> Vec<&UserGroup> {
+        let mut result = vec![self];
+        for child in &self.list {
+            result.extend(child.flatten());
+        }
+        result
+    }
+}
+
+/// 在组织单位列表中查找
+pub fn find_group_by_name<'a>(groups: &'a [UserGroup], name: &str) -> Option<&'a UserGroup> {
+    for group in groups {
+        if let Some(found) = group.find_by_name(name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+// ============================================
+// 绑定用户相关数据结构
+// ============================================
+
+/// 绑定用户请求
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DomainBindUserRequest {
+    /// 虚拟机 ID 列表
+    pub domain_id_list: Vec<String>,
+
+    /// 用户 ID
+    pub user_id: String,
+}
+
+impl DomainBindUserRequest {
+    /// 创建绑定用户请求
+    pub fn new(domain_ids: Vec<String>, user_id: String) -> Self {
+        Self {
+            domain_id_list: domain_ids,
+            user_id,
+        }
+    }
+
+    /// 单个虚拟机绑定
+    pub fn single(domain_id: String, user_id: String) -> Self {
+        Self {
+            domain_id_list: vec![domain_id],
+            user_id,
+        }
+    }
+}
+
+/// 绑定用户响应
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DomainBindUserResponse {
+    /// 未成功绑定的虚拟机 ID 列表
+    #[serde(default)]
+    pub not_bind_domain_id_list: Vec<String>,
+}
+
+// ============================================
+// 批量操作辅助结构
+// ============================================
+
+/// 虚拟机匹配结果（用于批量操作预览）
+#[derive(Debug, Clone, Serialize)]
+pub struct VmMatchResult {
+    /// 虚拟机 ID
+    pub id: String,
+    /// 虚拟机名称
+    pub name: String,
+    /// 当前状态
+    pub status: String,
+    /// 状态码
+    pub status_code: i64,
+    /// 已绑定用户名
+    pub bound_user: Option<String>,
+    /// 已绑定用户 ID
+    pub bound_user_id: Option<String>,
+    /// 主机 ID
+    pub host_id: String,
+    /// 主机名
+    pub host_name: String,
+    /// IP 地址
+    pub ip: Option<String>,
+    /// CPU 数量
+    pub cpu: Option<i64>,
+    /// 内存大小 (MB)
+    pub memory: Option<i64>,
+}
+
+/// 分配计划项
+#[derive(Debug, Clone, Serialize)]
+pub struct AssignmentPlan {
+    /// 虚拟机 ID
+    pub vm_id: String,
+    /// 虚拟机名称
+    pub vm_name: String,
+    /// 目标用户 ID
+    pub user_id: String,
+    /// 目标用户名
+    pub username: String,
+}
+
+/// 重命名计划项
+#[derive(Debug, Clone, Serialize)]
+pub struct RenamePlan {
+    /// 虚拟机 ID
+    pub vm_id: String,
+    /// 原名称
+    pub old_name: String,
+    /// 新名称（绑定用户名）
+    pub new_name: String,
+    /// 绑定用户 ID
+    pub user_id: String,
+}
+
+/// 批量操作结果
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchOperationResult {
+    /// 成功数量
+    pub success_count: usize,
+    /// 失败数量
+    pub failed_count: usize,
+    /// 成功的虚拟机列表
+    pub succeeded: Vec<String>,
+    /// 失败的虚拟机及原因
+    pub failed: Vec<(String, String)>,
+}

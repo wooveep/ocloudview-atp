@@ -94,6 +94,23 @@ enum HostAction {
     List,
     /// 移除主机
     Remove { id: String },
+    /// 更新主机 SSH 配置
+    UpdateSsh {
+        /// 主机 ID
+        id: String,
+        /// SSH 用户名
+        #[arg(long, short = 'u', default_value = "root")]
+        username: String,
+        /// SSH 密码
+        #[arg(long)]
+        password: Option<String>,
+        /// SSH 端口
+        #[arg(long, short = 'p', default_value = "22")]
+        port: u16,
+        /// SSH 密钥路径
+        #[arg(long, short = 'k')]
+        key: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -257,6 +274,20 @@ pub enum ReportAction {
 
 #[derive(Subcommand)]
 pub enum DbAction {
+    /// 初始化数据库
+    Init {
+        /// 数据库路径
+        #[arg(short, long, default_value = "~/.config/atp/data.db")]
+        db_path: String,
+    },
+
+    /// 升级数据库 (运行迁移)
+    Upgrade {
+        /// 数据库路径
+        #[arg(short, long, default_value = "~/.config/atp/data.db")]
+        db_path: String,
+    },
+
     /// 备份数据库
     Backup {
         /// 备份名称(可选,默认使用时间戳)
@@ -390,6 +421,98 @@ pub enum VdiAction {
         /// SSH 私钥路径
         #[arg(long)]
         ssh_key: Option<String>,
+
+        /// 输出格式 (table/json)
+        #[arg(short = 'f', long, default_value = "table")]
+        format: String,
+    },
+
+    /// 批量启动虚拟机
+    Start {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/atp.toml")]
+        config: String,
+
+        /// 虚拟机名称模式 (*=全部, prefix*=前缀, *suffix=后缀, *middle*=包含, exact=精确)
+        #[arg(short, long)]
+        pattern: String,
+
+        /// 预览模式，不执行实际操作
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 输出格式 (table/json)
+        #[arg(short = 'f', long, default_value = "table")]
+        format: String,
+    },
+
+    /// 批量分配虚拟机给用户
+    Assign {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/atp.toml")]
+        config: String,
+
+        /// 虚拟机名称模式
+        #[arg(short, long)]
+        pattern: String,
+
+        /// 用户名列表（逗号分隔）
+        #[arg(long, conflicts_with = "group")]
+        users: Option<String>,
+
+        /// 部门/组织单位名称
+        #[arg(long, conflicts_with = "users")]
+        group: Option<String>,
+
+        /// 预览模式
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 输出格式 (table/json)
+        #[arg(short = 'f', long, default_value = "table")]
+        format: String,
+    },
+
+    /// 批量重命名虚拟机为绑定用户名
+    Rename {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/atp.toml")]
+        config: String,
+
+        /// 虚拟机名称模式
+        #[arg(short, long)]
+        pattern: String,
+
+        /// 预览模式
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 输出格式 (table/json)
+        #[arg(short = 'f', long, default_value = "table")]
+        format: String,
+    },
+
+    /// 批量设置 autoJoinDomain
+    SetAutoJoinDomain {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/atp.toml")]
+        config: String,
+
+        /// 虚拟机名称模式
+        #[arg(short, long)]
+        pattern: String,
+
+        /// 启用自动加域
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+
+        /// 禁用自动加域
+        #[arg(long, conflicts_with = "enable")]
+        disable: bool,
+
+        /// 预览模式
+        #[arg(long)]
+        dry_run: bool,
 
         /// 输出格式 (table/json)
         #[arg(short = 'f', long, default_value = "table")]

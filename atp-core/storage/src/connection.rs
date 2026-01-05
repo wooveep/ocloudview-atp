@@ -48,7 +48,7 @@ impl StorageManager {
         let manager = Self { pool };
 
         // 运行迁移
-        manager.run_migrations().await?;
+        manager.run_all_migrations().await?;
 
         Ok(manager)
     }
@@ -62,27 +62,33 @@ impl StorageManager {
             .map_err(|e| StorageError::ConnectionError(e.to_string()))?;
 
         let manager = Self { pool };
-        manager.run_migrations().await?;
+        manager.run_all_migrations().await?;
 
         Ok(manager)
     }
 
-    /// 运行数据库迁移
-    async fn run_migrations(&self) -> Result<()> {
+    /// 运行所有数据库迁移
+    pub async fn run_all_migrations(&self) -> Result<usize> {
         info!("Running database migrations");
 
-        // 读取迁移脚本
-        let migration_sql = include_str!("../migrations/001_initial.sql");
-
-        // 执行迁移
-        sqlx::query(migration_sql)
-            .execute(&self.pool)
+        // 使用 sqlx 的 migrate! 宏嵌入并运行迁移
+        // 路径是相对于 Cargo.toml 的
+        let migrator = sqlx::migrate!("./migrations");
+        
+        // 获取待应用的迁移数量（用于报告）
+        // 注意：这里无法直接获取数量，migrator.run() 返回 Result<()>
+        // 我们先运行迁移
+        migrator
+            .run(&self.pool)
             .await
-            .map_err(|e| StorageError::MigrationError(e.to_string()))?;
+            .map_err(|e: sqlx::migrate::MigrateError| StorageError::MigrationError(e.to_string()))?;
 
         debug!("Database migrations completed successfully");
 
-        Ok(())
+        // 返回一个虚拟的成功数，因为 run() 不返回数量
+        // 在实际场景中，我们可以查询 _sqlx_migrations 表来获取更多信息
+        // 但为了简单起见，这里返回 1 表示成功
+        Ok(1)
     }
 
     /// 获取数据库连接池

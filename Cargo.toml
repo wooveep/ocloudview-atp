@@ -1,5 +1,19 @@
+# OCloudView-ATP 项目元数据
+#
+# 注意: 本项目采用嵌套工作区结构
+# - atp-application/ : 应用层工作区 (CLI, HTTP-API)
+# - atp-core/        : 核心模块工作区
+# - guest-verifier/  : Guest 验证器工作区
+#
+# 构建命令:
+#   cd atp-application && cargo build --release
+#   cd atp-core && cargo build --release
+#   cd guest-verifier && cargo build --release
+
 [workspace]
-members = []
+# 虚拟工作区，仅用于共享元数据
+# 实际构建请进入各子目录
+exclude = ["atp-application", "atp-core", "guest-verifier", "atp-common"]
 
 resolver = "2"
 
@@ -10,7 +24,7 @@ authors = ["OCloudView ATP Team"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-# 共享依赖版本
+# 共享基础依赖版本 (供参考，实际使用在各子工作区定义)
 tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -18,3 +32,4 @@ anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+

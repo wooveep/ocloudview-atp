@@ -54,6 +54,11 @@ pub struct HostRecord {
     pub uri: String,
     pub tags: Option<String>,     // JSON array
     pub metadata: Option<String>, // JSON object
+    // SSH 配置
+    pub ssh_username: Option<String>, // 默认 root
+    pub ssh_password: Option<String>, // 密码认证
+    pub ssh_port: Option<i32>,        // 默认 22
+    pub ssh_key_path: Option<String>, // 密钥路径
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -19,13 +19,17 @@ impl HostRepository {
     pub async fn upsert(&self, record: &HostRecord) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO hosts (id, host, uri, tags, metadata, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO hosts (id, host, uri, tags, metadata, ssh_username, ssh_password, ssh_port, ssh_key_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 host = excluded.host,
                 uri = excluded.uri,
                 tags = excluded.tags,
                 metadata = excluded.metadata,
+                ssh_username = COALESCE(hosts.ssh_username, excluded.ssh_username),
+                ssh_password = COALESCE(hosts.ssh_password, excluded.ssh_password),
+                ssh_port = COALESCE(hosts.ssh_port, excluded.ssh_port),
+                ssh_key_path = COALESCE(hosts.ssh_key_path, excluded.ssh_key_path),
                 updated_at = excluded.updated_at
             "#,
         )
@@ -34,6 +38,10 @@ impl HostRepository {
         .bind(&record.uri)
         .bind(&record.tags)
         .bind(&record.metadata)
+        .bind(&record.ssh_username)
+        .bind(&record.ssh_password)
+        .bind(&record.ssh_port)
+        .bind(&record.ssh_key_path)
         .bind(&record.created_at)
         .bind(&record.updated_at)
         .execute(&self.pool)
@@ -42,6 +50,41 @@ impl HostRepository {
 
         debug!("Upserted host: {}", record.id);
         Ok(())
+    }
+
+    /// 更新主机 SSH 配置
+    pub async fn update_ssh(
+        &self,
+        id: &str,
+        ssh_username: Option<&str>,
+        ssh_password: Option<&str>,
+        ssh_port: Option<i32>,
+        ssh_key_path: Option<&str>,
+    ) -> Result<bool> {
+        let now = Utc::now();
+        let result = sqlx::query(
+            r#"
+            UPDATE hosts SET
+                ssh_username = COALESCE(?, ssh_username),
+                ssh_password = COALESCE(?, ssh_password),
+                ssh_port = COALESCE(?, ssh_port),
+                ssh_key_path = COALESCE(?, ssh_key_path),
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(ssh_username)
+        .bind(ssh_password)
+        .bind(ssh_port)
+        .bind(ssh_key_path)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(StorageError::DatabaseError)?;
+
+        debug!("Updated SSH config for host: {}", id);
+        Ok(result.rows_affected() > 0)
     }
 
     /// 根据 ID 获取主机

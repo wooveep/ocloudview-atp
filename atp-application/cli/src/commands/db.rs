@@ -4,6 +4,10 @@ use std::path::PathBuf;
 
 pub async fn handle(action: crate::DbAction) -> Result<()> {
     match action {
+        crate::DbAction::Init { db_path } => init_database(&db_path).await,
+
+        crate::DbAction::Upgrade { db_path } => upgrade_database(&db_path).await,
+
         crate::DbAction::Backup {
             name,
             db_path,
@@ -171,6 +175,51 @@ async fn cleanup_backups(keep: usize, db_path: &str, backup_dir: Option<String>)
         println!("   剩余 {} 个备份", backups_after.len());
     } else {
         println!("✅ 无需清理,备份数量未超过保留数量");
+    }
+
+    Ok(())
+}
+
+async fn init_database(db_path: &str) -> Result<()> {
+    let expanded_db_path = shellexpand::tilde(db_path);
+
+    println!("🔄 正在初始化数据库: {}", expanded_db_path);
+
+    // 使用 StorageManager 初始化数据库（会自动运行初始迁移）
+    let manager = atp_storage::StorageManager::new(&expanded_db_path).await?;
+
+    // 健康检查
+    manager.health_check().await?;
+
+    println!("✅ 数据库初始化完成");
+
+    // 显示创建的表
+    println!("\n📋 已创建的表:");
+    println!("  - test_reports (测试报告)");
+    println!("  - execution_steps (执行步骤)");
+    println!("  - scenarios (场景)");
+    println!("  - hosts (主机)");
+    println!("  - domain_host_mappings (虚拟机-主机映射)");
+    println!("  - connection_metrics (连接指标)");
+
+    Ok(())
+}
+
+async fn upgrade_database(db_path: &str) -> Result<()> {
+    let expanded_db_path = shellexpand::tilde(db_path);
+
+    println!("🔄 正在升级数据库: {}", expanded_db_path);
+
+    // 使用 StorageManager 连接数据库
+    let manager = atp_storage::StorageManager::new(&expanded_db_path).await?;
+
+    // 运行所有迁移
+    let applied = manager.run_all_migrations().await?;
+
+    if applied > 0 {
+        println!("✅ 成功应用 {} 个迁移", applied);
+    } else {
+        println!("✅ 数据库已是最新版本，无需升级");
     }
 
     Ok(())

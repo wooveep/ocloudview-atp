@@ -421,6 +421,10 @@ impl ScenarioRunner {
                             uri,
                             tags: None,
                             metadata: None,
+                            ssh_username: None,
+                            ssh_password: None,
+                            ssh_port: None,
+                            ssh_key_path: None,
                             created_at: now,
                             updated_at: now,
                         };

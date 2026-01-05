@@ -11,8 +11,8 @@ use atp_executor::{Scenario, ScenarioRunner, TestConfig};
 use atp_protocol::ProtocolRegistry;
 use atp_storage::{Storage, StorageManager};
 use atp_transport::{HostInfo, TransportConfig, TransportManager};
-use atp_vdiplatform::{client::VdiConfig as VdiClientConfig, VdiClient};
 
+use crate::commands::common::create_vdi_client;
 use crate::config::CliConfig;
 
 pub async fn handle(action: crate::ScenarioAction) -> Result<()> {
@@ -322,24 +322,4 @@ async fn list_scenarios() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// 创建并登录 VDI 客户端
-async fn create_vdi_client(vdi_config: &atp_executor::VdiConfig) -> Result<VdiClient> {
-    let client_config = VdiClientConfig {
-        connect_timeout: vdi_config.connect_timeout,
-        request_timeout: vdi_config.connect_timeout,
-        max_retries: 3,
-        verify_ssl: vdi_config.verify_ssl,
-    };
-
-    let mut client =
-        VdiClient::new(&vdi_config.base_url, client_config).context("创建VDI客户端失败")?;
-
-    client
-        .login(&vdi_config.username, &vdi_config.password)
-        .await
-        .context("VDI登录失败")?;
-
-    Ok(client)
 }

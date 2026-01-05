@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::{VdiError, Result};
 use crate::api::{
-    DomainApi, DeskPoolApi, HostApi, ModelApi, UserApi,
+    DomainApi, DeskPoolApi, HostApi, ModelApi, UserApi, GroupApi,
     SnapshotApi, StorageApi, NetworkApi, EventApi, RecycleApi,
 };
 
@@ -148,6 +148,11 @@ impl VdiClient {
     /// 获取用户管理 API
     pub fn user(&self) -> UserApi<'_> {
         UserApi::new(self)
+    }
+
+    /// 获取组织单位管理 API
+    pub fn group(&self) -> GroupApi<'_> {
+        GroupApi::new(self)
     }
 
     /// 获取快照管理 API

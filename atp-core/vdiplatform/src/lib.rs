@@ -56,6 +56,7 @@ pub use api::{
     host::HostApi,
     model::ModelApi,
     user::UserApi,
+    group::GroupApi,
     snapshot::SnapshotApi,
     storage::StorageApi,
     network::NetworkApi,
@@ -93,4 +94,13 @@ pub use models::{
 
     // 磁盘和存储
     DiskInfo, StorageType,
+
+    // 组织单位
+    UserGroup, find_group_by_name,
+
+    // 绑定用户
+    DomainBindUserRequest, DomainBindUserResponse,
+
+    // 批量操作辅助结构
+    VmMatchResult, AssignmentPlan, RenamePlan, BatchOperationResult,
 };

@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS hosts (
     uri TEXT NOT NULL,
     tags TEXT, -- JSON array
     metadata TEXT, -- JSON object
+    ssh_username TEXT DEFAULT 'root',
+    ssh_password TEXT,
+    ssh_port INTEGER DEFAULT 22,
+    ssh_key_path TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

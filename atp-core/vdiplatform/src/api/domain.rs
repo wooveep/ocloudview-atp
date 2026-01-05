@@ -947,5 +947,37 @@ impl<'a> DomainApi<'a> {
             Some(config),
         ).await
     }
+
+    /// 重命名虚拟机
+    ///
+    /// 使用 PATCH /ocloud/v1/domain/{id} 修改虚拟机名称
+    pub async fn rename(&self, domain_id: &str, new_name: &str) -> Result<()> {
+        info!("重命名虚拟机: {} -> {}", domain_id, new_name);
+        let config = serde_json::json!({
+            "id": domain_id,
+            "name": new_name
+        });
+        self.client.request(
+            Method::PATCH,
+            &format!("/ocloud/v1/domain/{}", domain_id),
+            Some(config),
+        ).await
+    }
+
+    /// 设置虚拟机自动加域配置
+    ///
+    /// 使用 PATCH /ocloud/v1/domain/{id} 修改 autoJoinDomain 字段
+    pub async fn set_auto_join_domain(&self, domain_id: &str, enabled: i32) -> Result<()> {
+        info!("设置虚拟机自动加域: {} -> {}", domain_id, enabled);
+        let config = serde_json::json!({
+            "id": domain_id,
+            "autoJoinDomain": enabled
+        });
+        self.client.request(
+            Method::PATCH,
+            &format!("/ocloud/v1/domain/{}", domain_id),
+            Some(config),
+        ).await
+    }
 }
 

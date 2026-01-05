@@ -6,6 +6,7 @@
 //! - 主机管理 (HostApi)
 //! - 模板管理 (ModelApi)
 //! - 用户管理 (UserApi)
+//! - 组织单位管理 (GroupApi)
 //! - 快照管理 (SnapshotApi)
 //! - 存储管理 (StorageApi)
 //! - 网络管理 (NetworkApi)
@@ -17,6 +18,7 @@ pub mod desk_pool;
 pub mod host;
 pub mod model;
 pub mod user;
+pub mod group;
 pub mod snapshot;
 pub mod storage;
 pub mod network;
@@ -28,6 +30,7 @@ pub use desk_pool::DeskPoolApi;
 pub use host::HostApi;
 pub use model::ModelApi;
 pub use user::UserApi;
+pub use group::GroupApi;
 pub use snapshot::SnapshotApi;
 pub use storage::StorageApi;
 pub use network::NetworkApi;
