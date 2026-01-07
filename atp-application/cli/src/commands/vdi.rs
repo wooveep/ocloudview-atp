@@ -1,16 +1,16 @@
 //! VDI 平台管理和验证命令
 
-use crate::VdiAction;
 use crate::commands::common::{
     build_host_id_to_name_map_from_json, connect_libvirt, create_vdi_client,
 };
+use crate::VdiAction;
 use anyhow::{bail, Context, Result};
 use atp_executor::TestConfig;
 use atp_gluster::GlusterClient;
 use atp_ssh_executor::{SshClient, SshConfig};
 use atp_vdiplatform::{
-    BatchTaskRequest, DiskInfo, DomainStatus, HostStatusCode,
-    VmMatchResult, AssignmentPlan, RenamePlan,
+    AssignmentPlan, BatchTaskRequest, DiskInfo, DomainStatus, HostStatusCode, RenamePlan,
+    VmMatchResult,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -81,8 +81,9 @@ pub async fn handle(action: VdiAction) -> Result<()> {
             config,
             pattern,
             dry_run,
+            verify,
             format,
-        } => batch_start_vms(&config, &pattern, dry_run, &format).await?,
+        } => batch_start_vms(&config, &pattern, dry_run, verify, &format).await?,
         VdiAction::Assign {
             config,
             pattern,
@@ -114,7 +115,9 @@ pub async fn handle(action: VdiAction) -> Result<()> {
             disable,
             dry_run,
             format,
-        } => batch_set_auto_join_domain(&config, &pattern, enable, disable, dry_run, &format).await?,
+        } => {
+            batch_set_auto_join_domain(&config, &pattern, enable, disable, dry_run, &format).await?
+        }
     }
     Ok(())
 }
@@ -154,7 +157,9 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
     for domain in &vdi_domains {
         let name = domain["name"].as_str().unwrap_or("").to_string();
         let status_code = domain["status"].as_i64().unwrap_or(-1);
-        let status = DomainStatus::from_code(status_code).display_name().to_string();
+        let status = DomainStatus::from_code(status_code)
+            .display_name()
+            .to_string();
         // 使用 hostId 获取主机名
         let host_id = domain["hostId"].as_str().unwrap_or("");
         let host = host_id_to_name
@@ -163,14 +168,7 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
             .unwrap_or_else(|| "".to_string());
 
         if !name.is_empty() {
-            vdi_vms.insert(
-                name.clone(),
-                VmInfo {
-                    name,
-                    status,
-                    host,
-                },
-            );
+            vdi_vms.insert(name.clone(), VmInfo { name, status, host });
         }
     }
 
@@ -409,8 +407,8 @@ async fn list_hosts(config_path: &str) -> Result<()> {
     for host in &hosts {
         let name = host["name"].as_str().unwrap_or("");
         let ip = host["ip"].as_str().unwrap_or("");
-        let status = HostStatusCode::from_code(host["status"].as_i64().unwrap_or(-1))
-            .display_with_emoji();
+        let status =
+            HostStatusCode::from_code(host["status"].as_i64().unwrap_or(-1)).display_with_emoji();
         let cpu = host["cpuSize"].as_i64().unwrap_or(0);
         let memory_gb = host["memory"].as_f64().unwrap_or(0.0);
 
@@ -450,7 +448,10 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
     for domain in &domains {
         let name = domain["name"].as_str().unwrap_or("");
         let host_id = domain["hostId"].as_str().unwrap_or("");
-        let host_name = host_id_to_name.get(host_id).map(|s| s.as_str()).unwrap_or("");
+        let host_name = host_id_to_name
+            .get(host_id)
+            .map(|s| s.as_str())
+            .unwrap_or("");
 
         // 主机过滤
         if let Some(filter) = host_filter {
@@ -459,8 +460,8 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
             }
         }
 
-        let status = DomainStatus::from_code(domain["status"].as_i64().unwrap_or(-1))
-            .display_with_emoji();
+        let status =
+            DomainStatus::from_code(domain["status"].as_i64().unwrap_or(-1)).display_with_emoji();
         let cpu = domain["cpuNum"].as_i64().unwrap_or(0);
         let memory_gb = domain["memory"].as_f64().unwrap_or(0.0) / 1024.0;
 
@@ -478,9 +479,9 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
 
 /// 同步 VDI 主机到本地配置
 async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
-    use atp_storage::{Storage, StorageManager, HostRecord};
+    use atp_storage::{HostRecord, Storage, StorageManager};
     use chrono::Utc;
-    
+
     println!("🔄 同步 VDI 主机到数据库\n");
 
     let config = TestConfig::load_from_path(config_path)?;
@@ -497,7 +498,7 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
         .context("无法连接数据库")?;
     let storage = Storage::from_manager(&storage_manager);
     let host_repo = storage.hosts();
-    
+
     let now = Utc::now();
     let mut saved_count = 0;
 
@@ -517,21 +518,24 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
                 host: ip.to_string(), // 使用 IP 作为主机地址
                 uri,
                 tags: None,
-                metadata: Some(serde_json::json!({
-                    "hostname": name, // 原主机名存入 metadata
-                    "ip": ip,
-                    "status": host["status"].as_i64().unwrap_or(-1),
-                    "cpuSize": host["cpuSize"].as_i64().unwrap_or(0),
-                    "memory": host["memory"].as_f64().unwrap_or(0.0)
-                }).to_string()),
-                ssh_username: None,  // 保留现有 SSH 配置
+                metadata: Some(
+                    serde_json::json!({
+                        "hostname": name, // 原主机名存入 metadata
+                        "ip": ip,
+                        "status": host["status"].as_i64().unwrap_or(-1),
+                        "cpuSize": host["cpuSize"].as_i64().unwrap_or(0),
+                        "memory": host["memory"].as_f64().unwrap_or(0.0)
+                    })
+                    .to_string(),
+                ),
+                ssh_username: None, // 保留现有 SSH 配置
                 ssh_password: None,
                 ssh_port: None,
                 ssh_key_path: None,
                 created_at: now,
                 updated_at: now,
             };
-            
+
             if let Err(e) = host_repo.upsert(&host_record).await {
                 print!("- 保存失败: {} ", e);
             } else {
@@ -598,8 +602,7 @@ async fn disk_location(
     let domain = domains
         .iter()
         .find(|d| {
-            d["id"].as_str() == Some(vm_id_or_name)
-                || d["name"].as_str() == Some(vm_id_or_name)
+            d["id"].as_str() == Some(vm_id_or_name) || d["name"].as_str() == Some(vm_id_or_name)
         })
         .context(format!("未找到虚拟机: {}", vm_id_or_name))?;
 
@@ -629,7 +632,7 @@ async fn disk_location(
 
     if has_gluster && enable_ssh {
         use atp_storage::{Storage, StorageManager};
-        
+
         println!("🔗 查询 Gluster 存储池关联主机...\n");
 
         // 尝试连接数据库获取 SSH 配置
@@ -640,7 +643,7 @@ async fn disk_location(
                 let hosts = storage.hosts().list_all().await.ok();
                 hosts
             }
-            Err(_) => None
+            Err(_) => None,
         };
 
         // 收集所有 Gluster 磁盘的存储池 ID
@@ -660,10 +663,7 @@ async fn disk_location(
             let data = &pool_detail["data"];
 
             // 获取资源池 poolId
-            let resource_pool_id = data["poolId"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            let resource_pool_id = data["poolId"].as_str().unwrap_or("").to_string();
 
             if resource_pool_id.is_empty() {
                 warn!("   存储池 {} 没有关联资源池", storage_pool_id);
@@ -671,7 +671,10 @@ async fn disk_location(
                 continue;
             }
 
-            info!("   存储池 {} 关联资源池: {}", storage_pool_id, resource_pool_id);
+            info!(
+                "   存储池 {} 关联资源池: {}",
+                storage_pool_id, resource_pool_id
+            );
 
             // 根据资源池 ID 查询关联主机
             let hosts = client.host().list_by_pool_id(&resource_pool_id).await?;
@@ -698,17 +701,21 @@ async fn disk_location(
                 } else if let Some(ref hosts) = db_ssh_config {
                     // 尝试从数据库获取 SSH 配置 (按 IP 或 host 匹配)
                     let db_host = hosts.iter().find(|h| {
-                        h.host == *host_ip || 
-                        h.metadata.as_ref().map_or(false, |m| m.contains(host_ip))
+                        h.host == *host_ip
+                            || h.metadata.as_ref().map_or(false, |m| m.contains(host_ip))
                     });
-                    
+
                     if let Some(host_record) = db_host {
                         let username = host_record.ssh_username.as_deref().unwrap_or(ssh_user);
                         let port = host_record.ssh_port.unwrap_or(22) as u16;
-                        
+
                         if let Some(ref key_path) = host_record.ssh_key_path {
-                            info!("   使用数据库 SSH 配置: {}@{}:{} (key: {})", username, host_ip, port, key_path);
-                            SshConfig::with_key(host_ip, username, PathBuf::from(key_path)).port(port)
+                            info!(
+                                "   使用数据库 SSH 配置: {}@{}:{} (key: {})",
+                                username, host_ip, port, key_path
+                            );
+                            SshConfig::with_key(host_ip, username, PathBuf::from(key_path))
+                                .port(port)
                         } else {
                             info!("   使用数据库 SSH 配置: {}@{}:{}", username, host_ip, port);
                             SshConfig::with_default_key(host_ip, username).port(port)
@@ -724,7 +731,10 @@ async fn disk_location(
 
                 match SshClient::connect(ssh_config).await {
                     Ok(ssh) => {
-                        println!("   ✅ SSH 连接成功: {} (存储池 {})", host_ip, storage_pool_id);
+                        println!(
+                            "   ✅ SSH 连接成功: {} (存储池 {})",
+                            host_ip, storage_pool_id
+                        );
                         connected_client = Some(GlusterClient::new(ssh));
                         break;
                     }
@@ -768,13 +778,12 @@ async fn output_disk_location_table(
     println!("虚拟机: {}\n", domain_name);
 
     for (i, disk) in disks.iter().enumerate() {
-        let boot_label = if disk.is_boot_disk() { " [启动盘]" } else { "" };
-        println!(
-            "📀 磁盘 {} - {}{}\n",
-            i + 1,
-            disk.name,
-            boot_label
-        );
+        let boot_label = if disk.is_boot_disk() {
+            " [启动盘]"
+        } else {
+            ""
+        };
+        println!("📀 磁盘 {} - {}{}\n", i + 1, disk.name, boot_label);
 
         println!("   文件名:     {}", disk.filename);
         println!("   逻辑路径:   {}", disk.vol_full_path);
@@ -944,12 +953,11 @@ async fn get_matching_vms(
 
         let id = domain["id"].as_str().unwrap_or("").to_string();
         let status_code = domain["status"].as_i64().unwrap_or(-1);
-        let status = DomainStatus::from_code(status_code).display_name().to_string();
+        let status = DomainStatus::from_code(status_code)
+            .display_name()
+            .to_string();
         let host_id = domain["hostId"].as_str().unwrap_or("").to_string();
-        let host_name = host_id_to_name
-            .get(&host_id)
-            .cloned()
-            .unwrap_or_default();
+        let host_name = host_id_to_name.get(&host_id).cloned().unwrap_or_default();
 
         // 获取绑定用户信息
         let bound_user = domain["bindUserName"].as_str().map(|s| s.to_string());
@@ -981,6 +989,7 @@ async fn batch_start_vms(
     config_path: &str,
     pattern: &str,
     dry_run: bool,
+    verify: bool,
     format: &str,
 ) -> Result<()> {
     println!("╔════════════════════════════════════════════════════════════════╗");
@@ -999,15 +1008,22 @@ async fn batch_start_vms(
     let hosts = client.host().list_all().await?;
     let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
 
+    // 构建主机 ID 到 IP 的映射
+    let host_id_to_ip: HashMap<String, String> = hosts
+        .iter()
+        .filter_map(|h| {
+            let id = h["id"].as_str()?.to_string();
+            let ip = h["ip"].as_str()?.to_string();
+            Some((id, ip))
+        })
+        .collect();
+
     // 获取匹配的虚拟机
     println!("🔍 匹配模式: {}\n", pattern);
     let all_vms = get_matching_vms(&client, pattern, &host_id_to_name).await?;
 
-    // 过滤关机状态的虚拟机 (status=5 为 Shutoff)
-    let vms_to_start: Vec<_> = all_vms
-        .iter()
-        .filter(|vm| vm.status_code == 5)
-        .collect();
+    // 过滤关机状态的虚拟机 (VDI 平台: status=0 为 Shutoff)
+    let vms_to_start: Vec<_> = all_vms.iter().filter(|vm| vm.status_code == 0).collect();
 
     if vms_to_start.is_empty() {
         println!("⚠️  没有找到需要启动的关机虚拟机");
@@ -1032,16 +1048,10 @@ async fn batch_start_vms(
             println!("{}", serde_json::to_string_pretty(&json_data)?);
         }
         _ => {
-            println!(
-                "{:<30} {:<20} {:<15}",
-                "虚拟机名称", "主机", "状态"
-            );
+            println!("{:<30} {:<20} {:<15}", "虚拟机名称", "主机", "状态");
             println!("{}", "-".repeat(70));
             for vm in &vms_to_start {
-                println!(
-                    "{:<30} {:<20} {:<15}",
-                    vm.name, vm.host_name, vm.status
-                );
+                println!("{:<30} {:<20} {:<15}", vm.name, vm.host_name, vm.status);
             }
         }
     }
@@ -1067,7 +1077,170 @@ async fn batch_start_vms(
         }
     }
 
+    // QGA 验证
+    if verify {
+        println!("\n╔════════════════════════════════════════════════════════════════╗");
+        println!("║                    QGA 启动验证                                ║");
+        println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+        // 等待初始延迟 (30秒)
+        println!("⏳ 等待虚拟机启动 (30秒)...");
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
+        // 准备验证任务
+        let vms_for_verify: Vec<_> = vms_to_start
+            .iter()
+            .map(|vm| {
+                let host_ip = host_id_to_ip.get(&vm.host_id).cloned().unwrap_or_default();
+                (
+                    vm.name.clone(),
+                    vm.host_name.clone(),
+                    vm.host_id.clone(),
+                    host_ip,
+                )
+            })
+            .collect();
+
+        println!("🔍 开始并行验证 {} 个虚拟机...\n", vms_for_verify.len());
+
+        // 并行验证所有 VM
+        let verify_results = verify_vms_with_qga(&vms_for_verify).await;
+
+        // 输出验证结果
+        let mut success_count = 0;
+        let mut failed_vms: Vec<(String, String, String)> = Vec::new();
+
+        for (vm_name, host_name, success, error_msg) in &verify_results {
+            if *success {
+                success_count += 1;
+                info!("✅ {} ({}) - QGA 验证成功", vm_name, host_name);
+            } else {
+                failed_vms.push((vm_name.clone(), host_name.clone(), error_msg.clone()));
+            }
+        }
+
+        println!("\n╔════════════════════════════════════════════════════════════════╗");
+        println!("║                    验证结果报告                                ║");
+        println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+        println!("📊 验证统计:");
+        println!("   总数: {}", vms_for_verify.len());
+        println!("   成功: {} ✅", success_count);
+        println!("   失败: {} ❌", failed_vms.len());
+
+        if !failed_vms.is_empty() {
+            println!("\n❌ 未成功启动的虚拟机列表:");
+            println!("{:<30} {:<20} {:<30}", "虚拟机名称", "主机", "错误原因");
+            println!("{}", "-".repeat(80));
+            for (vm_name, host_name, error_msg) in &failed_vms {
+                println!("{:<30} {:<20} {:<30}", vm_name, host_name, error_msg);
+            }
+
+            // 如果有失败的虚拟机，以非零状态退出
+            std::process::exit(1);
+        }
+    }
+
     Ok(())
+}
+
+/// 通过 QGA 验证虚拟机是否启动成功
+/// 返回: Vec<(vm_name, host_name, success, error_message)>
+async fn verify_vms_with_qga(
+    vms: &[(String, String, String, String)], // (vm_name, host_name, host_id, host_ip)
+) -> Vec<(String, String, bool, String)> {
+    use futures::future::join_all;
+
+    const MAX_RETRIES: u32 = 3;
+    const RETRY_DELAY_SECS: u64 = 20;
+
+    let tasks: Vec<_> = vms
+        .iter()
+        .map(|(vm_name, host_name, _host_id, host_ip)| {
+            let vm_name = vm_name.clone();
+            let host_name = host_name.clone();
+            let host_ip = host_ip.clone();
+
+            async move {
+                let result = verify_single_vm_with_qga(
+                    &vm_name,
+                    &host_name,
+                    &host_ip,
+                    MAX_RETRIES,
+                    RETRY_DELAY_SECS,
+                )
+                .await;
+                match result {
+                    Ok(()) => (vm_name, host_name, true, String::new()),
+                    Err(e) => (vm_name, host_name, false, e.to_string()),
+                }
+            }
+        })
+        .collect();
+
+    join_all(tasks).await
+}
+
+/// 验证单个虚拟机
+async fn verify_single_vm_with_qga(
+    vm_name: &str,
+    host_name: &str,
+    host_ip: &str,
+    max_retries: u32,
+    retry_delay_secs: u64,
+) -> Result<()> {
+    use atp_protocol::qga::QgaProtocol;
+    use atp_protocol::Protocol;
+    use virt::domain::Domain;
+
+    info!("验证虚拟机 {} (主机: {})", vm_name, host_name);
+
+    // 连接 libvirt
+    let conn_result = connect_libvirt(host_name, host_ip)
+        .await
+        .context(format!("无法连接主机 {} ({})", host_name, host_ip))?;
+
+    // 获取 domain
+    let domain = {
+        let conn_mutex = conn_result
+            .connection
+            .get_connection()
+            .await
+            .map_err(|e| anyhow::anyhow!("获取连接失败: {}", e))?;
+        let conn_guard = conn_mutex.lock().await;
+        let conn_ref = conn_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("连接不可用"))?;
+
+        Domain::lookup_by_name(conn_ref, vm_name)
+            .map_err(|e| anyhow::anyhow!("找不到虚拟机 {}: {}", vm_name, e))?
+    };
+
+    // 重试 QGA ping
+    for attempt in 1..=max_retries {
+        info!("QGA ping 尝试 {}/{} - {}", attempt, max_retries, vm_name);
+
+        let mut qga = QgaProtocol::new().with_timeout(10);
+        match qga.connect(&domain).await {
+            Ok(()) => {
+                // connect 成功意味着 ping 也成功了 (connect 内部会调用 ping)
+                info!("✅ {} - QGA 验证成功", vm_name);
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️  {} - QGA 连接失败 (尝试 {}/{}): {}",
+                    vm_name, attempt, max_retries, e
+                );
+                if attempt < max_retries {
+                    info!("等待 {} 秒后重试...", retry_delay_secs);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay_secs)).await;
+                }
+            }
+        }
+    }
+
+    bail!("QGA 验证失败 (已重试 {} 次)", max_retries)
 }
 
 /// 批量分配虚拟机给用户
@@ -1123,7 +1296,10 @@ async fn batch_assign_vms(
             .find_by_name(group)
             .await?
             .context(format!("未找到组织单位: {}", group))?;
-        client.user().list_by_group(&group_info.distinguished_name).await?
+        client
+            .user()
+            .list_by_group(&group_info.distinguished_name)
+            .await?
     } else {
         bail!("必须指定 --users 或 --group 参数");
     };
@@ -1166,16 +1342,10 @@ async fn batch_assign_vms(
             println!("{}", serde_json::to_string_pretty(&json_data)?);
         }
         _ => {
-            println!(
-                "{:<30} {:<20}",
-                "虚拟机", "分配给用户"
-            );
+            println!("{:<30} {:<20}", "虚拟机", "分配给用户");
             println!("{}", "-".repeat(55));
             for plan in &assignment_plans {
-                println!(
-                    "{:<30} {:<20}",
-                    plan.vm_name, plan.username
-                );
+                println!("{:<30} {:<20}", plan.vm_name, plan.username);
             }
         }
     }
@@ -1203,11 +1373,7 @@ async fn batch_assign_vms(
     let mut error_count = 0;
 
     for plan in &assignment_plans {
-        match client
-            .domain()
-            .bind_user(&plan.vm_id, &plan.user_id)
-            .await
-        {
+        match client.domain().bind_user(&plan.vm_id, &plan.user_id).await {
             Ok(_) => {
                 info!("✅ {} -> {}", plan.vm_name, plan.username);
                 success_count += 1;
@@ -1219,7 +1385,10 @@ async fn batch_assign_vms(
         }
     }
 
-    println!("\n📊 分配结果: 成功 {}, 失败 {}", success_count, error_count);
+    println!(
+        "\n📊 分配结果: 成功 {}, 失败 {}",
+        success_count, error_count
+    );
 
     Ok(())
 }
@@ -1255,7 +1424,9 @@ async fn batch_rename_vms(
     let rename_plans: Vec<RenamePlan> = all_vms
         .iter()
         .filter_map(|vm| {
-            if let (Some(ref bound_user), Some(ref bound_user_id)) = (&vm.bound_user, &vm.bound_user_id) {
+            if let (Some(ref bound_user), Some(ref bound_user_id)) =
+                (&vm.bound_user, &vm.bound_user_id)
+            {
                 if vm.name != *bound_user {
                     return Some(RenamePlan {
                         vm_id: vm.id.clone(),
@@ -1291,16 +1462,10 @@ async fn batch_rename_vms(
             println!("{}", serde_json::to_string_pretty(&json_data)?);
         }
         _ => {
-            println!(
-                "{:<30} {:<30}",
-                "当前名称", "新名称"
-            );
+            println!("{:<30} {:<30}", "当前名称", "新名称");
             println!("{}", "-".repeat(65));
             for plan in &rename_plans {
-                println!(
-                    "{:<30} {:<30}",
-                    plan.old_name, plan.new_name
-                );
+                println!("{:<30} {:<30}", plan.old_name, plan.new_name);
             }
         }
     }
@@ -1316,11 +1481,7 @@ async fn batch_rename_vms(
     let mut error_count = 0;
 
     for plan in &rename_plans {
-        match client
-            .domain()
-            .rename(&plan.vm_id, &plan.new_name)
-            .await
-        {
+        match client.domain().rename(&plan.vm_id, &plan.new_name).await {
             Ok(_) => {
                 info!("✅ {} -> {}", plan.old_name, plan.new_name);
                 success_count += 1;
@@ -1332,7 +1493,10 @@ async fn batch_rename_vms(
         }
     }
 
-    println!("\n📊 重命名结果: 成功 {}, 失败 {}", success_count, error_count);
+    println!(
+        "\n📊 重命名结果: 成功 {}, 失败 {}",
+        success_count, error_count
+    );
 
     Ok(())
 }
@@ -1399,16 +1563,10 @@ async fn batch_set_auto_join_domain(
             println!("{}", serde_json::to_string_pretty(&json_data)?);
         }
         _ => {
-            println!(
-                "{:<30} {:<20} {:<15}",
-                "虚拟机名称", "主机", "操作"
-            );
+            println!("{:<30} {:<20} {:<15}", "虚拟机名称", "主机", "操作");
             println!("{}", "-".repeat(70));
             for vm in &all_vms {
-                println!(
-                    "{:<30} {:<20} {}",
-                    vm.name, vm.host_name, action_name
-                );
+                println!("{:<30} {:<20} {}", vm.name, vm.host_name, action_name);
             }
         }
     }

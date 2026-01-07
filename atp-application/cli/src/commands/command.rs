@@ -7,9 +7,7 @@ use crate::config::CliConfig;
 
 pub async fn handle(action: crate::CommandAction) -> Result<()> {
     match action {
-        crate::CommandAction::Exec { host, vm, cmd } => {
-            exec_command(&host, &vm, &cmd).await
-        }
+        crate::CommandAction::Exec { host, vm, cmd } => exec_command(&host, &vm, &cmd).await,
     }
 }
 

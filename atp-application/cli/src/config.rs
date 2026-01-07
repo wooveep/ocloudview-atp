@@ -79,11 +79,10 @@ impl CliConfig {
             return Ok(Self::default());
         }
 
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("读取配置文件失败: {:?}", path))?;
+        let content =
+            fs::read_to_string(&path).with_context(|| format!("读取配置文件失败: {:?}", path))?;
 
-        toml::from_str(&content)
-            .with_context(|| format!("解析配置文件失败: {:?}", path))
+        toml::from_str(&content).with_context(|| format!("解析配置文件失败: {:?}", path))
     }
 
     /// 保存配置
@@ -96,11 +95,9 @@ impl CliConfig {
                 .with_context(|| format!("创建配置目录失败: {:?}", parent))?;
         }
 
-        let content = toml::to_string_pretty(self)
-            .context("序列化配置失败")?;
+        let content = toml::to_string_pretty(self).context("序列化配置失败")?;
 
-        fs::write(&path, content)
-            .with_context(|| format!("写入配置文件失败: {:?}", path))?;
+        fs::write(&path, content).with_context(|| format!("写入配置文件失败: {:?}", path))?;
 
         Ok(())
     }
@@ -197,7 +194,9 @@ mod tests {
         assert_eq!(config.default_host, Some("host1".to_string()));
 
         // 添加第二个主机
-        config.add_host("host2", "192.168.1.101", Some("qemu:///system".to_string())).unwrap();
+        config
+            .add_host("host2", "192.168.1.101", Some("qemu:///system".to_string()))
+            .unwrap();
         assert_eq!(config.hosts.len(), 2);
         assert_eq!(config.default_host, Some("host1".to_string())); // 默认主机不变
 

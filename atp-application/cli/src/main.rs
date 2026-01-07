@@ -441,6 +441,10 @@ pub enum VdiAction {
         #[arg(long)]
         dry_run: bool,
 
+        /// 启动后通过 QGA 验证虚拟机是否真正启动成功
+        #[arg(long)]
+        verify: bool,
+
         /// 输出格式 (table/json)
         #[arg(short = 'f', long, default_value = "table")]
         format: String,

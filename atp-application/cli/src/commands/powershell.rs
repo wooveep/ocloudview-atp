@@ -3,8 +3,8 @@
 //! 通过 QGA (QEMU Guest Agent) 协议向 Windows 虚拟机发送 Base64 编码的 PowerShell 命令
 //! WebSocket 验证是可选的，用于确认虚拟机是否收到并执行了命令
 
+use crate::commands::common::{build_host_id_to_name_map_from_json, create_vdi_client};
 use crate::PowerShellAction;
-use crate::commands::common::{create_vdi_client, build_host_id_to_name_map_from_json};
 use anyhow::{Context, Result};
 use atp_executor::TestConfig;
 use atp_protocol::qga::{GuestExecCommand, GuestExecStatus, QgaProtocol};
@@ -167,10 +167,7 @@ async fn exec_powershell(
     let mut host_groups: HashMap<String, Vec<&VmTarget>> = HashMap::new();
     for target in &targets {
         if let Some(host_ip) = &target.host_ip {
-            host_groups
-                .entry(host_ip.clone())
-                .or_default()
-                .push(target);
+            host_groups.entry(host_ip.clone()).or_default().push(target);
         }
     }
 
@@ -260,11 +257,7 @@ async fn exec_powershell(
                         if is_success {
                             println!("      {} 执行成功 (退出码: 0)", "✅".green());
                         } else {
-                            println!(
-                                "      {} 执行完成 (退出码: {})",
-                                "⚠️".yellow(),
-                                exit_code
-                            );
+                            println!("      {} 执行完成 (退出码: {})", "⚠️".yellow(), exit_code);
                         }
 
                         // 显示 stdout
@@ -463,10 +456,7 @@ async fn resolve_targets(
         let name = domain["name"].as_str().unwrap_or("").to_string();
         let status = domain["status"].as_i64().unwrap_or(-1);
         let host_id = domain["hostId"].as_str().unwrap_or("");
-        let (host_name, host_ip) = host_id_to_info
-            .get(host_id)
-            .cloned()
-            .unwrap_or_default();
+        let (host_name, host_ip) = host_id_to_info.get(host_id).cloned().unwrap_or_default();
         let ip = domain["ip"].as_str().map(|s| s.to_string());
 
         // 根据参数过滤
@@ -553,10 +543,7 @@ async fn list_vms(config_path: &str, host_filter: Option<String>) -> Result<()> 
     for domain in &domains {
         let name = domain["name"].as_str().unwrap_or("");
         let host_id = domain["hostId"].as_str().unwrap_or("");
-        let host_name = host_id_to_name
-            .get(host_id)
-            .cloned()
-            .unwrap_or_default();
+        let host_name = host_id_to_name.get(host_id).cloned().unwrap_or_default();
 
         // 主机过滤
         if let Some(ref filter) = host_filter {
@@ -565,8 +552,8 @@ async fn list_vms(config_path: &str, host_filter: Option<String>) -> Result<()> 
             }
         }
 
-        let status = DomainStatus::from_code(domain["status"].as_i64().unwrap_or(-1))
-            .display_with_emoji();
+        let status =
+            DomainStatus::from_code(domain["status"].as_i64().unwrap_or(-1)).display_with_emoji();
 
         let ip = domain["ip"].as_str().unwrap_or("N/A");
 

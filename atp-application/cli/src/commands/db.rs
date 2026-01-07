@@ -63,11 +63,7 @@ async fn backup_database(
     Ok(())
 }
 
-async fn restore_database(
-    backup_path: &str,
-    db_path: &str,
-    safety_backup: bool,
-) -> Result<()> {
+async fn restore_database(backup_path: &str, db_path: &str, safety_backup: bool) -> Result<()> {
     let expanded_db_path = shellexpand::tilde(db_path);
     let expanded_backup_path = shellexpand::tilde(backup_path);
 
@@ -103,10 +99,7 @@ async fn list_backups(db_path: &str, backup_dir: Option<String>) -> Result<()> {
 
     println!("📦 数据库备份列表:");
     println!();
-    println!(
-        "{:<50} {:<12} {:<20}",
-        "文件路径", "大小", "备份时间"
-    );
+    println!("{:<50} {:<12} {:<20}", "文件路径", "大小", "备份时间");
     println!("{}", "-".repeat(85));
 
     for backup in &backups {

@@ -1,9 +1,9 @@
 //! 测试报告管理命令
 
 use anyhow::Result;
-use colored::Colorize;
+use atp_storage::{ReportFilter, Storage, StorageManager};
 use chrono::Local;
-use atp_storage::{StorageManager, Storage, ReportFilter};
+use colored::Colorize;
 
 pub async fn handle(action: crate::ReportAction) -> Result<()> {
     match action {
@@ -14,7 +14,9 @@ pub async fn handle(action: crate::ReportAction) -> Result<()> {
             limit,
         } => list_reports(scenario, passed, failed, limit).await,
         crate::ReportAction::Show { id } => show_report(id).await,
-        crate::ReportAction::Export { id, output, format } => export_report(id, &output, &format).await,
+        crate::ReportAction::Export { id, output, format } => {
+            export_report(id, &output, &format).await
+        }
         crate::ReportAction::Delete { id } => delete_report(id).await,
         crate::ReportAction::Stats { scenario, days } => show_stats(&scenario, days).await,
         crate::ReportAction::Cleanup { days, force } => cleanup_reports(days, force).await,
@@ -75,11 +77,7 @@ async fn list_reports(
         let local_time = report.start_time.with_timezone(&Local);
         let time_str = local_time.format("%Y-%m-%d %H:%M:%S").to_string();
 
-        let steps_str = format!(
-            "{}/{}",
-            report.success_count,
-            report.total_steps
-        );
+        let steps_str = format!("{}/{}", report.success_count, report.total_steps);
 
         let duration_str = if let Some(ms) = report.duration_ms {
             format!("{:.2}s", ms as f64 / 1000.0)
@@ -89,12 +87,7 @@ async fn list_reports(
 
         println!(
             "{:<6} {:<25} {:<20} {:<8} {:<10} {:<15}",
-            report.id,
-            report.scenario_name,
-            time_str,
-            result_str,
-            steps_str,
-            duration_str
+            report.id, report.scenario_name, time_str, result_str, steps_str, duration_str
         );
     }
 
@@ -125,11 +118,14 @@ async fn show_report(id: i64) -> Result<()> {
         println!("  描述: {}", desc);
     }
 
-    println!("  结果: {}", if report.passed {
-        "通过 ✓".green()
-    } else {
-        "失败 ✗".red()
-    });
+    println!(
+        "  结果: {}",
+        if report.passed {
+            "通过 ✓".green()
+        } else {
+            "失败 ✗".red()
+        }
+    );
 
     let local_time = report.start_time.with_timezone(&Local);
     println!("  开始时间: {}", local_time.format("%Y-%m-%d %H:%M:%S"));
@@ -155,7 +151,12 @@ async fn show_report(id: i64) -> Result<()> {
                 _ => "?".normal(),
             };
 
-            println!("    {} 步骤 {}: {}", status_icon, step.step_index + 1, step.description);
+            println!(
+                "    {} 步骤 {}: {}",
+                status_icon,
+                step.step_index + 1,
+                step.description
+            );
 
             if let Some(error) = &step.error {
                 println!("      错误: {}", error.red());
@@ -267,7 +268,8 @@ async fn cleanup_reports(days: i32, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("\n{} 找到 {} 个报告将被删除 (早于 {})",
+    println!(
+        "\n{} 找到 {} 个报告将被删除 (早于 {})",
         "⚠".yellow(),
         to_delete.len(),
         cutoff_date.format("%Y-%m-%d")

@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use atp_executor::VdiConfig;
 use atp_transport::{HostConnection, HostInfo};
-use atp_vdiplatform::{VdiClient, client::VdiConfig as VdiClientConfig};
+use atp_vdiplatform::{client::VdiConfig as VdiClientConfig, VdiClient};
 use std::collections::HashMap;
 use tracing::info;
 
@@ -21,8 +21,8 @@ pub async fn create_vdi_client(vdi_config: &VdiConfig) -> Result<VdiClient> {
         verify_ssl: vdi_config.verify_ssl,
     };
 
-    let mut client = VdiClient::new(&vdi_config.base_url, client_config)
-        .context("创建VDI客户端失败")?;
+    let mut client =
+        VdiClient::new(&vdi_config.base_url, client_config).context("创建VDI客户端失败")?;
 
     client
         .login(&vdi_config.username, &vdi_config.password)
