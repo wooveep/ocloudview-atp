@@ -338,17 +338,21 @@ pub struct Model {
 
 /// 用户信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     /// 用户 ID
     pub id: String,
 
-    /// 用户名
+    /// 用户名 (sAMAccountName from AD)
+    #[serde(alias = "sAMAccountName", alias = "username")]
     pub username: String,
 
     /// 显示名称
+    #[serde(default)]
     pub display_name: String,
 
     /// 邮箱
+    #[serde(default)]
     pub email: Option<String>,
 }
 
@@ -1296,6 +1300,8 @@ pub struct AssignmentPlan {
     pub user_id: String,
     /// 目标用户名
     pub username: String,
+    /// 是否为重新分配（覆盖已有绑定）
+    pub is_reassignment: bool,
 }
 
 /// 重命名计划项

@@ -472,6 +472,10 @@ pub enum VdiAction {
         #[arg(long)]
         dry_run: bool,
 
+        /// 强制重新分配（覆盖已绑定用户）
+        #[arg(long)]
+        force: bool,
+
         /// 输出格式 (table/json)
         #[arg(short = 'f', long, default_value = "table")]
         format: String,

@@ -11,7 +11,7 @@ use reqwest::Method;
 use tracing::info;
 
 use crate::client::VdiClient;
-use crate::error::Result;
+use crate::error::{Result, VdiError};
 use crate::models::{
     Domain, CreateDomainRequest, DomainStatus,
     BatchTaskRequest, BatchTaskResponse, BatchDeleteRequest,
@@ -162,6 +162,30 @@ impl<'a> DomainApi<'a> {
         ).await
     }
 
+    /// 查询虚拟机详情(返回原始 JSON)
+    pub async fn get_raw(&self, domain_id: &str) -> Result<serde_json::Value> {
+        info!("查询虚拟机详情(原始): {}", domain_id);
+
+        let token = self.client.get_token().await?;
+        let response: serde_json::Value = self.client
+            .http_client()
+            .get(format!("{}/ocloud/v1/domain/{}", self.client.base_url(), domain_id))
+            .header("Token", &token)
+            .send()
+            .await
+            .map_err(|e| VdiError::HttpError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| VdiError::ParseError(e.to_string()))?;
+
+        if response["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = response["msg"].as_str().unwrap_or("未知错误");
+            return Err(VdiError::ApiError(500, msg.to_string()));
+        }
+
+        Ok(response["data"].clone())
+    }
+
     /// 启动虚拟机
     pub async fn start(&self, domain_id: &str) -> Result<()> {
         info!("启动虚拟机: {}", domain_id);
@@ -222,30 +246,78 @@ impl<'a> DomainApi<'a> {
         ).await
     }
 
-    /// 绑定用户
-    pub async fn bind_user(&self, domain_id: &str, user_id: &str) -> Result<()> {
-        info!("绑定用户到虚拟机: {} -> {}", user_id, domain_id);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/bind-user",
-            Some(serde_json::json!({
-                "domain_id": domain_id,
-                "user_id": user_id,
-            })),
-        ).await
+    /// 绑定用户到虚拟机
+    ///
+    /// # Arguments
+    /// * `domain_id` - 虚拟机 ID
+    /// * `username` - 用户名 (sAMAccountName)
+    pub async fn bind_user(&self, domain_id: &str, username: &str) -> Result<()> {
+        info!("绑定用户到虚拟机: {} -> {}", username, domain_id);
+
+        let url = "/ocloud/v1/domain/bind-user";
+        let token = self.client.get_token().await?;
+
+        let payload = serde_json::json!({
+            "domainIdList": [domain_id],
+            "userId": username,
+        });
+
+        let response: serde_json::Value = self
+            .client
+            .http_client()
+            .post(&format!("{}{}", self.client.base_url(), url))
+            .header("Token", &token)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| VdiError::HttpError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| VdiError::ParseError(e.to_string()))?;
+
+        if response["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = response["msg"].as_str().unwrap_or("未知错误");
+            return Err(VdiError::ApiError(500, msg.to_string()));
+        }
+
+        Ok(())
     }
 
     /// 解绑用户
-    pub async fn unbind_user(&self, domain_id: &str, user_id: &str) -> Result<()> {
-        info!("解绑用户从虚拟机: {} <- {}", user_id, domain_id);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/unbind-user",
-            Some(serde_json::json!({
-                "domain_id": domain_id,
-                "user_id": user_id,
-            })),
-        ).await
+    ///
+    /// # Arguments
+    /// * `domain_id` - 虚拟机 ID
+    pub async fn unbind_user(&self, domain_id: &str) -> Result<()> {
+        info!("解绑用户从虚拟机: {}", domain_id);
+
+        let url = "/ocloud/v1/domain/unbind-user";
+        let token = self.client.get_token().await?;
+
+        let payload = serde_json::json!({
+            "domainIdList": [domain_id],
+        });
+
+        let response: serde_json::Value = self
+            .client
+            .http_client()
+            .post(&format!("{}{}", self.client.base_url(), url))
+            .header("Token", &token)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| VdiError::HttpError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| VdiError::ParseError(e.to_string()))?;
+
+        if response["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = response["msg"].as_str().unwrap_or("未知错误");
+            return Err(VdiError::ApiError(500, msg.to_string()));
+        }
+
+        Ok(())
     }
 
     // ============================================
@@ -953,15 +1025,33 @@ impl<'a> DomainApi<'a> {
     /// 使用 PATCH /ocloud/v1/domain/{id} 修改虚拟机名称
     pub async fn rename(&self, domain_id: &str, new_name: &str) -> Result<()> {
         info!("重命名虚拟机: {} -> {}", domain_id, new_name);
-        let config = serde_json::json!({
-            "id": domain_id,
-            "name": new_name
-        });
-        self.client.request(
-            Method::PATCH,
-            &format!("/ocloud/v1/domain/{}", domain_id),
-            Some(config),
-        ).await
+
+        // 先获取虚拟机完整配置
+        let mut config = self.get_raw(domain_id).await?;
+
+        // 更新名称
+        config["name"] = serde_json::Value::String(new_name.to_string());
+
+        let token = self.client.get_token().await?;
+        let response: serde_json::Value = self.client
+            .http_client()
+            .patch(format!("{}/ocloud/v1/domain/{}", self.client.base_url(), domain_id))
+            .header("Token", &token)
+            .header("Content-Type", "application/json")
+            .json(&config)
+            .send()
+            .await
+            .map_err(|e| VdiError::HttpError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| VdiError::ParseError(e.to_string()))?;
+
+        if response["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = response["msg"].as_str().unwrap_or("未知错误");
+            return Err(VdiError::ApiError(500, msg.to_string()));
+        }
+
+        Ok(())
     }
 
     /// 设置虚拟机自动加域配置
@@ -969,15 +1059,33 @@ impl<'a> DomainApi<'a> {
     /// 使用 PATCH /ocloud/v1/domain/{id} 修改 autoJoinDomain 字段
     pub async fn set_auto_join_domain(&self, domain_id: &str, enabled: i32) -> Result<()> {
         info!("设置虚拟机自动加域: {} -> {}", domain_id, enabled);
-        let config = serde_json::json!({
-            "id": domain_id,
-            "autoJoinDomain": enabled
-        });
-        self.client.request(
-            Method::PATCH,
-            &format!("/ocloud/v1/domain/{}", domain_id),
-            Some(config),
-        ).await
+
+        // 先获取虚拟机完整配置
+        let mut config = self.get_raw(domain_id).await?;
+
+        // 更新 autoJoinDomain 字段
+        config["autoJoinDomain"] = serde_json::Value::Number(enabled.into());
+
+        let token = self.client.get_token().await?;
+        let response: serde_json::Value = self.client
+            .http_client()
+            .patch(format!("{}/ocloud/v1/domain/{}", self.client.base_url(), domain_id))
+            .header("Token", &token)
+            .header("Content-Type", "application/json")
+            .json(&config)
+            .send()
+            .await
+            .map_err(|e| VdiError::HttpError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| VdiError::ParseError(e.to_string()))?;
+
+        if response["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = response["msg"].as_str().unwrap_or("未知错误");
+            return Err(VdiError::ApiError(500, msg.to_string()));
+        }
+
+        Ok(())
     }
 }
 

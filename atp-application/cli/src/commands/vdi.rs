@@ -90,6 +90,7 @@ pub async fn handle(action: VdiAction) -> Result<()> {
             users,
             group,
             dry_run,
+            force,
             format,
         } => {
             batch_assign_vms(
@@ -97,6 +98,7 @@ pub async fn handle(action: VdiAction) -> Result<()> {
                 &pattern,
                 users.as_deref(),
                 group.as_deref(),
+                force,
                 dry_run,
                 &format,
             )
@@ -959,9 +961,12 @@ async fn get_matching_vms(
         let host_id = domain["hostId"].as_str().unwrap_or("").to_string();
         let host_name = host_id_to_name.get(&host_id).cloned().unwrap_or_default();
 
-        // 获取绑定用户信息
-        let bound_user = domain["bindUserName"].as_str().map(|s| s.to_string());
-        let bound_user_id = domain["bindUserId"].as_str().map(|s| s.to_string());
+        // 获取绑定用户信息 - API 只返回 userId，不返回用户名
+        let bound_user_id = domain["userId"].as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        // 使用 userId 作为 bound_user，因为 API 不返回用户名
+        let bound_user = bound_user_id.clone();
         let ip = domain["ip"].as_str().map(|s| s.to_string());
         let cpu = domain["cpuNum"].as_i64();
         let memory = domain["memory"].as_i64();
@@ -1249,6 +1254,7 @@ async fn batch_assign_vms(
     pattern: &str,
     users_str: Option<&str>,
     group_name: Option<&str>,
+    force: bool,
     dry_run: bool,
     format: &str,
 ) -> Result<()> {
@@ -1268,22 +1274,77 @@ async fn batch_assign_vms(
     let hosts = client.host().list_all().await?;
     let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
 
-    // 获取匹配的虚拟机（过滤未分配的）
+    // 获取匹配的虚拟机
     println!("🔍 匹配模式: {}\n", pattern);
     let all_vms = get_matching_vms(&client, pattern, &host_id_to_name).await?;
 
-    let unassigned_vms: Vec<_> = all_vms
+    // 分离已分配和未分配的虚拟机
+    let (assigned_vms, unassigned_vms): (Vec<_>, Vec<_>) = all_vms
         .iter()
-        .filter(|vm| vm.bound_user.is_none())
+        .partition(|vm| vm.bound_user.is_some());
+
+    // 收集已有虚拟机的用户 ID
+    let users_with_vms: std::collections::HashSet<_> = assigned_vms
+        .iter()
+        .filter_map(|vm| vm.bound_user.as_ref())
         .collect();
 
-    if unassigned_vms.is_empty() {
-        println!("⚠️  没有找到未分配的虚拟机");
+    // 确定要处理的虚拟机列表和是否跳过已有虚拟机的用户
+    let (vms_to_assign, skip_users_with_vms): (Vec<_>, bool) = if assigned_vms.is_empty() {
+        // 没有已分配的虚拟机，直接使用未分配的
+        (unassigned_vms.iter().cloned().collect(), false)
+    } else if force {
+        // 强制模式：使用所有匹配的虚拟机，不跳过用户
+        println!("⚠️  强制模式: 将覆盖 {} 个已绑定虚拟机的用户\n", assigned_vms.len());
+        (all_vms.iter().collect(), false)
+    } else if dry_run {
+        // 预览模式且有已分配虚拟机：显示全部信息但只处理未分配的
+        println!("⚠️  发现 {} 个虚拟机已有绑定用户 (预览模式下跳过):\n", assigned_vms.len());
+        for vm in &assigned_vms {
+            println!("  - {} -> {}", vm.name, vm.bound_user.as_ref().unwrap());
+        }
+        println!();
+        (unassigned_vms.iter().cloned().collect(), true)
+    } else {
+        // 交互模式：提示用户选择
+        println!("\n⚠️  发现 {} 个虚拟机已有绑定用户:", assigned_vms.len());
+        for vm in &assigned_vms {
+            println!("  - {} -> {}", vm.name, vm.bound_user.as_ref().unwrap());
+        }
+        println!("\n选择操作:");
+        println!("  [S] 跳过已绑定虚拟机，仅分配未绑定的");
+        println!("  [R] 重新分配所有虚拟机（覆盖已绑定用户）");
+        println!("  [C] 取消操作");
+        print!("\n请选择 (S/R/C): ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let choice = input.trim().to_uppercase();
+
+        match choice.as_str() {
+            "R" => {
+                println!("\n📌 将重新分配所有虚拟机\n");
+                (all_vms.iter().collect(), false)
+            }
+            "S" => {
+                println!("\n📌 将跳过已绑定虚拟机\n");
+                (unassigned_vms.iter().cloned().collect(), true)
+            }
+            _ => {
+                println!("\n❌ 已取消操作");
+                return Ok(());
+            }
+        }
+    };
+
+    if vms_to_assign.is_empty() {
+        println!("⚠️  没有找到需要分配的虚拟机");
         return Ok(());
     }
 
     // 获取目标用户
-    let target_users: Vec<atp_vdiplatform::User> = if let Some(users) = users_str {
+    let all_target_users: Vec<atp_vdiplatform::User> = if let Some(users) = users_str {
         // 从用户名列表获取
         let usernames: Vec<String> = users.split(',').map(|s| s.trim().to_string()).collect();
         println!("📋 指定用户: {:?}\n", usernames);
@@ -1304,24 +1365,54 @@ async fn batch_assign_vms(
         bail!("必须指定 --users 或 --group 参数");
     };
 
-    if target_users.is_empty() {
+    if all_target_users.is_empty() {
         println!("⚠️  没有找到目标用户");
         return Ok(());
     }
 
+    // 如果跳过模式，过滤掉已有虚拟机的用户
+    let target_users: Vec<_> = if skip_users_with_vms && !users_with_vms.is_empty() {
+        let filtered: Vec<_> = all_target_users
+            .into_iter()
+            .filter(|u| !users_with_vms.contains(&u.username))
+            .collect();
+        let skipped_count = users_with_vms.len();
+        if skipped_count > 0 {
+            println!("📌 跳过 {} 个已有虚拟机的用户\n", skipped_count);
+        }
+        filtered
+    } else {
+        all_target_users
+    };
+
+    if target_users.is_empty() {
+        println!("⚠️  没有需要分配的用户（所有用户都已有虚拟机）");
+        return Ok(());
+    }
+
+    // 统计
+    let reassign_count = vms_to_assign.iter().filter(|vm| vm.bound_user.is_some()).count();
+    let new_assign_count = vms_to_assign.len() - reassign_count;
+
     println!("👥 找到 {} 个目标用户", target_users.len());
-    println!("💻 找到 {} 个未分配虚拟机\n", unassigned_vms.len());
+    if reassign_count > 0 {
+        println!("💻 找到 {} 个虚拟机 ({} 新分配, {} 重新分配)\n",
+            vms_to_assign.len(), new_assign_count, reassign_count);
+    } else {
+        println!("💻 找到 {} 个未分配虚拟机\n", vms_to_assign.len());
+    }
 
     // 生成分配计划（1:1 对应）
-    let plan_count = std::cmp::min(unassigned_vms.len(), target_users.len());
+    let plan_count = std::cmp::min(vms_to_assign.len(), target_users.len());
     let mut assignment_plans: Vec<AssignmentPlan> = Vec::new();
 
     for i in 0..plan_count {
         assignment_plans.push(AssignmentPlan {
-            vm_id: unassigned_vms[i].id.clone(),
-            vm_name: unassigned_vms[i].name.clone(),
+            vm_id: vms_to_assign[i].id.clone(),
+            vm_name: vms_to_assign[i].name.clone(),
             user_id: target_users[i].id.clone(),
             username: target_users[i].username.clone(),
+            is_reassignment: vms_to_assign[i].bound_user.is_some(),
         });
     }
 
@@ -1336,29 +1427,31 @@ async fn batch_assign_vms(
                         "vm_name": p.vm_name,
                         "user_id": p.user_id,
                         "user_name": p.username,
+                        "is_reassignment": p.is_reassignment,
                     })
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&json_data)?);
         }
         _ => {
-            println!("{:<30} {:<20}", "虚拟机", "分配给用户");
-            println!("{}", "-".repeat(55));
+            println!("{:<30} {:<20} {:<12}", "虚拟机", "分配给用户", "状态");
+            println!("{}", "-".repeat(65));
             for plan in &assignment_plans {
-                println!("{:<30} {:<20}", plan.vm_name, plan.username);
+                let status = if plan.is_reassignment { "重新分配" } else { "新分配" };
+                println!("{:<30} {:<20} {:<12}", plan.vm_name, plan.username, status);
             }
         }
     }
 
-    if unassigned_vms.len() > target_users.len() {
+    if vms_to_assign.len() > target_users.len() {
         println!(
             "\n⚠️  有 {} 个虚拟机没有匹配的用户",
-            unassigned_vms.len() - target_users.len()
+            vms_to_assign.len() - target_users.len()
         );
-    } else if target_users.len() > unassigned_vms.len() {
+    } else if target_users.len() > vms_to_assign.len() {
         println!(
             "\n⚠️  有 {} 个用户没有匹配的虚拟机",
-            target_users.len() - unassigned_vms.len()
+            target_users.len() - vms_to_assign.len()
         );
     }
 
@@ -1373,9 +1466,20 @@ async fn batch_assign_vms(
     let mut error_count = 0;
 
     for plan in &assignment_plans {
-        match client.domain().bind_user(&plan.vm_id, &plan.user_id).await {
+        // 如果是重新分配，先解绑现有用户
+        if plan.is_reassignment {
+            if let Err(e) = client.domain().unbind_user(&plan.vm_id).await {
+                error!("❌ 解绑失败 {}: {}", plan.vm_name, e);
+                error_count += 1;
+                continue;
+            }
+        }
+
+        // 绑定新用户
+        match client.domain().bind_user(&plan.vm_id, &plan.username).await {
             Ok(_) => {
-                info!("✅ {} -> {}", plan.vm_name, plan.username);
+                let action = if plan.is_reassignment { "重新分配" } else { "分配" };
+                info!("✅ {} {} -> {}", action, plan.vm_name, plan.username);
                 success_count += 1;
             }
             Err(e) => {
