@@ -427,6 +427,25 @@ impl ScenarioRunner {
                             ssh_key_path: None,
                             created_at: now,
                             updated_at: now,
+                            // VDI 扩展字段
+                            ip_v6: None,
+                            status: None,
+                            pool_id: None,
+                            vmc_id: None,
+                            manufacturer: None,
+                            model: None,
+                            cpu: None,
+                            cpu_size: None,
+                            memory: None,
+                            physical_memory: None,
+                            domain_limit: None,
+                            extranet_ip: None,
+                            extranet_ip_v6: None,
+                            arch: None,
+                            domain_cap_xml: None,
+                            qemu_version: None,
+                            libvirt_version: None,
+                            cached_at: Some(now),
                         };
 
                         if let Err(e) = storage.hosts().upsert(&host_record).await {
@@ -438,7 +457,7 @@ impl ScenarioRunner {
             }
 
             let mut domain_names = Vec::new();
-            let mut mappings = Vec::new();
+            let mut domain_records = Vec::new();
 
             for domain in &domains {
                 if let Some(name) = domain["name"].as_str() {
@@ -452,26 +471,84 @@ impl ScenarioRunner {
                             // 从 VDI 平台获取操作系统类型
                             let os_type = domain["osType"].as_str();
 
-                            mappings.push(atp_storage::DomainHostMappingRecord {
-                                domain_name: name.to_string(),
-                                host_id: host_id.to_string(),
-                                host_ip: host_ip.to_string(),
-                                host_name: host_name.map(|s| s.to_string()),
+                            // 构建简化的 DomainRecord 用于保存到数据库
+                            let domain_record = atp_storage::DomainRecord {
+                                id: domain["id"].as_str().unwrap_or(name).to_string(),
+                                name: Some(name.to_string()),
+                                host_id: Some(host_id.to_string()),
                                 os_type: os_type.map(|s| s.to_string()),
-                                updated_at: chrono::Utc::now(),
-                            });
+                                status: domain["status"].as_i64().map(|v| v as i32),
+                                // 其余字段使用 None
+                                is_model: None,
+                                is_connected: None,
+                                vmc_id: None,
+                                pool_id: None,
+                                last_successful_host_id: None,
+                                cpu: None,
+                                memory: None,
+                                iso_path: None,
+                                is_clone_domain: None,
+                                clone_type: None,
+                                mother_id: None,
+                                snapshot_count: None,
+                                freeze: None,
+                                last_freeze_time: None,
+                                command: None,
+                                os_name: None,
+                                os_edition: None,
+                                system_type: None,
+                                mainboard: None,
+                                bootloader: None,
+                                working_group: None,
+                                desktop_pool_id: None,
+                                user_id: None,
+                                remark: None,
+                                connect_time: None,
+                                disconnect_time: None,
+                                soundcard_type: None,
+                                domain_xml: None,
+                                affinity_ip: None,
+                                sockets: None,
+                                cores: None,
+                                threads: None,
+                                original_ip: None,
+                                original_mac: None,
+                                is_recycle: None,
+                                disable_alpha: None,
+                                graphics_card_num: None,
+                                independ_disk_cnt: None,
+                                mouse_mode: None,
+                                domain_fake: None,
+                                host_bios_enable: None,
+                                host_model_enable: None,
+                                nested_virtual: None,
+                                admin_id: None,
+                                admin_name: None,
+                                allow_monitor: None,
+                                agent_version: None,
+                                gpu_type: None,
+                                auto_join_domain: None,
+                                vgpu_type: None,
+                                keyboard_bus: None,
+                                mouse_bus: None,
+                                keep_alive: None,
+                                create_time: None,
+                                update_time: Some(chrono::Utc::now()),
+                                cached_at: Some(chrono::Utc::now()),
+                            };
+                            domain_records.push(domain_record);
                         }
                     }
                 }
             }
 
-            // 保存虚拟机-主机映射到数据库
+            // 保存虚拟机记录到数据库
             if let Some(storage) = &self.storage {
-                if !mappings.is_empty() {
-                    if let Err(e) = storage.domain_host_mappings().upsert_batch(&mappings).await {
-                        warn!("保存虚拟机-主机映射失败: {}", e);
+                if !domain_records.is_empty() {
+                    if let Err(e) = storage.domains().upsert_batch(&domain_records).await {
+                        warn!("保存虚拟机记录失败: {}", e);
                     } else {
-                        info!("保存了 {} 个虚拟机-主机映射到数据库", mappings.len());
+                        info!("保存了 {} 个虚拟机记录到数据库", domain_records.len());
                     }
                 }
             }
@@ -541,33 +618,38 @@ impl ScenarioRunner {
         let host_id = if let Some(host) = &scenario.target_host {
             host.clone()
         } else if let Some(storage) = &self.storage {
-            // 从数据库读取虚拟机-主机映射
+            // 从数据库读取虚拟机记录
             match storage
-                .domain_host_mappings()
-                .get_by_domain(domain_name)
+                .domains()
+                .get_by_name(domain_name)
                 .await
             {
-                Ok(Some(mapping)) => {
+                Ok(Some(domain_record)) => {
+                    let host_id = domain_record.host_id.clone().unwrap_or_default();
+                    // 获取主机 IP (从 hosts 表)
+                    let host_ip = if let Ok(Some(host_record)) = storage.hosts().get_by_id(&host_id).await {
+                        host_record.host.clone()
+                    } else {
+                        host_id.clone() // 回退到使用 host_id
+                    };
+                    
                     info!(
                         "从数据库获取虚拟机 {} 的主机信息: {} ({})",
-                        domain_name, mapping.host_id, mapping.host_ip
+                        domain_name, host_id, host_ip
                     );
 
                     // 确保主机已注册到 transport_manager
                     let registered_hosts = self.transport_manager.list_hosts().await;
                     if !registered_hosts
                         .iter()
-                        .any(|h| h == &mapping.host_id || h == &mapping.host_ip)
+                        .any(|h| h == &host_id || h == &host_ip)
                     {
                         // 动态注册主机
-                        info!("动态注册主机: {} ({})", mapping.host_id, mapping.host_ip);
-                        let uri = format!("qemu+tcp://{}/system", mapping.host_ip);
+                        info!("动态注册主机: {} ({})", host_id, host_ip);
+                        let uri = format!("qemu+tcp://{}/system", host_ip);
                         let host_info = atp_transport::HostInfo {
-                            id: mapping.host_id.clone(),
-                            host: mapping
-                                .host_name
-                                .clone()
-                                .unwrap_or_else(|| mapping.host_ip.clone()),
+                            id: host_id.clone(),
+                            host: host_ip.clone(),
                             uri,
                             tags: vec![],
                             metadata: std::collections::HashMap::new(),
@@ -590,7 +672,7 @@ impl ScenarioRunner {
                             // 尝试获取连接来检查是否已建立
                             match self
                                 .transport_manager
-                                .execute_on_host(&mapping.host_id, |_conn| async move {
+                                .execute_on_host(&host_id, |_conn| async move {
                                     // 简单检查连接状态
                                     Ok(())
                                 })
@@ -598,7 +680,7 @@ impl ScenarioRunner {
                             {
                                 Ok(_) => {
                                     connected = true;
-                                    info!("主机连接已建立: {}", mapping.host_id);
+                                    info!("主机连接已建立: {}", host_id);
                                     break;
                                 }
                                 Err(_) => {
@@ -610,12 +692,12 @@ impl ScenarioRunner {
                         if !connected {
                             return Err(ExecutorError::TransportError(format!(
                                 "等待主机 {} 连接超时",
-                                mapping.host_id
+                                host_id
                             )));
                         }
                     }
 
-                    mapping.host_id
+                    host_id
                 }
                 Ok(None) => {
                     warn!("数据库中未找到虚拟机 {} 的主机映射", domain_name);
@@ -795,12 +877,12 @@ impl ScenarioRunner {
         // 1. 从数据库获取 Guest OS 类型（由 VDI 平台提供）
         let os_type = if let Some(storage) = &self.storage {
             match storage
-                .domain_host_mappings()
-                .get_by_domain(target_domain)
+                .domains()
+                .get_by_name(target_domain)
                 .await
             {
-                Ok(Some(mapping)) => {
-                    let os = Self::normalize_os_type(mapping.os_type.as_deref());
+                Ok(Some(domain_record)) => {
+                    let os = Self::normalize_os_type(domain_record.os_type.as_deref());
                     info!("从数据库获取 Guest OS 类型: {} -> {}", target_domain, os);
                     os
                 }

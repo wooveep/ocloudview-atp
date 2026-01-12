@@ -36,14 +36,32 @@ impl<'a> StorageApi<'a> {
         ).await
     }
 
-    /// 存储池查询全部
+    /// 存储池查询全部（自动处理分页）
     pub async fn list_all_pools(&self) -> Result<Vec<serde_json::Value>> {
         info!("查询所有存储池");
-        self.client.request(
-            Method::GET,
-            "/ocloud/v1/storage-pool/all",
-            None::<()>,
-        ).await
+        
+        let url = "/ocloud/v1/storage-pool?pageNum=1&pageSize=1000";
+        let token = self.client.get_token().await?;
+        
+        let response: serde_json::Value = self.client.http_client()
+            .get(&format!("{}{}", self.client.base_url(), url))
+            .header("Token", &token)
+            .send()
+            .await
+            .map_err(|e| crate::error::VdiError::HttpError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| crate::error::VdiError::ParseError(e.to_string()))?;
+        
+        if response["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = response["msg"].as_str().unwrap_or("未知错误");
+            return Err(crate::error::VdiError::ApiError(500, msg.to_string()));
+        }
+        
+        Ok(response["data"]["list"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .clone())
     }
 
     /// 查询存储池详情
@@ -214,14 +232,155 @@ impl<'a> StorageApi<'a> {
         ).await
     }
 
-    /// 查询存储卷（全部）
+    /// 查询存储卷（全部，遍历所有存储池）
+    ///
+    /// 注意：VDI API 需要指定 storagePoolId 才能获取存储卷，
+    /// 因此此方法会先获取所有存储池，然后遍历每个存储池获取其存储卷
     pub async fn list_all_volumes(&self) -> Result<Vec<serde_json::Value>> {
-        info!("查询所有存储卷");
-        self.client.request(
-            Method::GET,
-            "/ocloud/v1/storage-volume/all",
-            None::<()>,
-        ).await
+        info!("查询所有存储卷（遍历所有存储池）");
+        
+        // 1. 先获取所有存储池
+        let storage_pools = self.list_all_pools().await?;
+        
+        let mut all_volumes = Vec::new();
+        let token = self.client.get_token().await?;
+        
+        // 2. 遍历每个存储池获取其存储卷
+        for pool in &storage_pools {
+            let pool_id = match pool["id"].as_str() {
+                Some(id) => id,
+                None => continue,
+            };
+            
+            let pool_name = pool["name"].as_str().unwrap_or("unknown");
+            tracing::debug!("获取存储池 {} ({}) 的存储卷", pool_name, pool_id);
+            
+            // 使用分页获取所有存储卷
+            let url = format!(
+                "/ocloud/v1/storage-volume?pageNum=1&pageSize=10000&storagePoolId={}&snapshotFree=1",
+                pool_id
+            );
+            
+            let response: serde_json::Value = self.client.http_client()
+                .get(&format!("{}{}", self.client.base_url(), &url))
+                .header("Token", &token)
+                .send()
+                .await
+                .map_err(|e| crate::error::VdiError::HttpError(e.to_string()))?
+                .json()
+                .await
+                .map_err(|e| crate::error::VdiError::ParseError(e.to_string()))?;
+            
+            if response["status"].as_i64().unwrap_or(-1) != 0 {
+                let msg = response["msg"].as_str().unwrap_or("未知错误");
+                tracing::warn!("获取存储池 {} 的存储卷失败: {}", pool_id, msg);
+                continue;
+            }
+            
+            if let Some(volumes) = response["data"]["list"].as_array() {
+                tracing::debug!("存储池 {} 有 {} 个存储卷", pool_name, volumes.len());
+                all_volumes.extend(volumes.clone());
+            }
+        }
+        
+        info!("共获取 {} 个存储卷（来自 {} 个存储池）", all_volumes.len(), storage_pools.len());
+        Ok(all_volumes)
+    }
+
+    /// 按存储池查询存储卷（用于通过文件名查找 VM）
+    ///
+    /// # Arguments
+    /// * `storage_pool_id` - 存储池 ID
+    /// * `keyword` - 关键字过滤（可选）
+    /// * `page_num` - 页码
+    /// * `page_size` - 每页数量
+    ///
+    /// # Returns
+    /// 返回分页结果，包含存储卷列表及其关联的虚拟机信息
+    ///
+    /// # Example Response
+    /// ```json
+    /// {
+    ///   "status": 0,
+    ///   "data": {
+    ///     "list": [
+    ///       {
+    ///         "id": "9fed5f84-ccdb-42f6-b3bd-6be6d3930939",
+    ///         "name": "disk-1",
+    ///         "storagePoolId": "8f9e2b87-3237-4eac-a7d9-8e8e13ba3764",
+    ///         "domainId": "cfe73063-3017-4966-bea9-ada24929e30d",
+    ///         "domainName": "vm-test-01"
+    ///       }
+    ///     ]
+    ///   }
+    /// }
+    /// ```
+    pub async fn query_volumes_by_pool(
+        &self,
+        storage_pool_id: &str,
+        keyword: Option<&str>,
+        page_num: u32,
+        page_size: u32,
+    ) -> Result<serde_json::Value> {
+        let keyword_param = keyword.unwrap_or("");
+        info!(
+            "按存储池查询存储卷: pool={}, keyword={}, page={}/{}",
+            storage_pool_id, keyword_param, page_num, page_size
+        );
+
+        let url = format!(
+            "/ocloud/v1/storage-volume?pageNum={}&pageSize={}&keyword={}&storagePoolId={}&snapshotFree=1",
+            page_num, page_size, keyword_param, storage_pool_id
+        );
+
+        self.client.request(Method::GET, &url, None::<()>).await
+    }
+
+    /// 按存储池查询所有存储卷（自动分页获取全部）
+    ///
+    /// # Arguments
+    /// * `storage_pool_id` - 存储池 ID
+    ///
+    /// # Returns
+    /// 存储池下的所有存储卷列表
+    pub async fn list_volumes_by_pool(&self, storage_pool_id: &str) -> Result<Vec<serde_json::Value>> {
+        info!("查询存储池 {} 下的所有存储卷", storage_pool_id);
+
+        let mut all_volumes = Vec::new();
+        let mut page_num = 1;
+        let page_size = 100;
+
+        loop {
+            let response = self
+                .query_volumes_by_pool(storage_pool_id, None, page_num, page_size)
+                .await?;
+
+            let data = &response["data"];
+            let list = data["list"].as_array();
+
+            if let Some(volumes) = list {
+                if volumes.is_empty() {
+                    break;
+                }
+                all_volumes.extend(volumes.clone());
+
+                // 检查是否还有更多页
+                let total = data["total"].as_u64().unwrap_or(0) as usize;
+                if all_volumes.len() >= total {
+                    break;
+                }
+                page_num += 1;
+            } else {
+                break;
+            }
+        }
+
+        info!(
+            "存储池 {} 共有 {} 个存储卷",
+            storage_pool_id,
+            all_volumes.len()
+        );
+        Ok(all_volumes)
     }
 
     /// 创建存储卷

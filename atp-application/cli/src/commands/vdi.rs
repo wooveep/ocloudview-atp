@@ -6,7 +6,7 @@ use crate::commands::common::{
 use crate::VdiAction;
 use anyhow::{bail, Context, Result};
 use atp_executor::TestConfig;
-use atp_gluster::GlusterClient;
+use atp_gluster::{GlusterClient, SplitBrainEntry, SplitBrainEntryType};
 use atp_ssh_executor::{SshClient, SshConfig};
 use atp_vdiplatform::{
     AssignmentPlan, BatchTaskRequest, DiskInfo, DomainStatus, HostStatusCode, RenamePlan,
@@ -14,8 +14,9 @@ use atp_vdiplatform::{
 };
 use serde_json::json;
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// VDI 虚拟机信息
 #[derive(Debug, Clone)]
@@ -57,6 +58,8 @@ pub async fn handle(action: VdiAction) -> Result<()> {
             config,
             test_connection,
         } => sync_hosts(&config, test_connection).await?,
+        VdiAction::SyncVms { config } => sync_vms(&config).await?,
+        VdiAction::SyncAll { config } => sync_all(&config).await?,
         VdiAction::DiskLocation {
             config,
             vm,
@@ -119,6 +122,30 @@ pub async fn handle(action: VdiAction) -> Result<()> {
             format,
         } => {
             batch_set_auto_join_domain(&config, &pattern, enable, disable, dry_run, &format).await?
+        }
+        VdiAction::HealSplitbrain {
+            config,
+            pool_id,
+            ssh,
+            ssh_user,
+            ssh_password,
+            ssh_key,
+            dry_run,
+            auto,
+            format,
+        } => {
+            heal_splitbrain(
+                &config,
+                pool_id.as_deref(),
+                ssh,
+                &ssh_user,
+                ssh_password.as_deref(),
+                ssh_key.as_deref(),
+                dry_run,
+                auto,
+                &format,
+            )
+            .await?
         }
     }
     Ok(())
@@ -481,8 +508,7 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
 
 /// 同步 VDI 主机到本地配置
 async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
-    use atp_storage::{HostRecord, Storage, StorageManager};
-    use chrono::Utc;
+    use atp_storage::{StorageManager, VdiCacheManager};
 
     println!("🔄 同步 VDI 主机到数据库\n");
 
@@ -494,56 +520,22 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
 
     println!("📊 发现 {} 个主机:\n", hosts.len());
 
-    // 连接数据库
+    // 连接数据库并创建缓存管理器
     let storage_manager = StorageManager::new("~/.config/atp/data.db")
         .await
         .context("无法连接数据库")?;
-    let storage = Storage::from_manager(&storage_manager);
-    let host_repo = storage.hosts();
+    let cache = VdiCacheManager::new(storage_manager);
 
-    let now = Utc::now();
-    let mut saved_count = 0;
+    // 使用缓存管理器同步主机（包含完整的 22 个 VDI 字段）
+    let saved_count = cache.sync_hosts(&hosts).await?;
 
+    // 显示主机列表并可选测试连接
     for (i, host) in hosts.iter().enumerate() {
-        let host_id = host["id"].as_str().unwrap_or("");
         let name = host["name"].as_str().unwrap_or("");
         let ip = host["ip"].as_str().unwrap_or("");
         let host_status = HostStatusCode::from_code(host["status"].as_i64().unwrap_or(-1));
 
         print!("  {}. {} ({}) ", i + 1, name, ip);
-
-        // 保存到数据库
-        if !host_id.is_empty() {
-            let uri = format!("qemu+tcp://{}/system", ip);
-            let host_record = HostRecord {
-                id: host_id.to_string(),
-                host: ip.to_string(), // 使用 IP 作为主机地址
-                uri,
-                tags: None,
-                metadata: Some(
-                    serde_json::json!({
-                        "hostname": name, // 原主机名存入 metadata
-                        "ip": ip,
-                        "status": host["status"].as_i64().unwrap_or(-1),
-                        "cpuSize": host["cpuSize"].as_i64().unwrap_or(0),
-                        "memory": host["memory"].as_f64().unwrap_or(0.0)
-                    })
-                    .to_string(),
-                ),
-                ssh_username: None, // 保留现有 SSH 配置
-                ssh_password: None,
-                ssh_port: None,
-                ssh_key_path: None,
-                created_at: now,
-                updated_at: now,
-            };
-
-            if let Err(e) = host_repo.upsert(&host_record).await {
-                print!("- 保存失败: {} ", e);
-            } else {
-                saved_count += 1;
-            }
-        }
 
         if !host_status.is_online() {
             println!("- {}", host_status.display_with_emoji());
@@ -561,12 +553,100 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
                 }
             }
         } else {
-            println!("- {} [已保存]", host_status.display_with_emoji());
+            println!("- {} [已同步]", host_status.display_with_emoji());
         }
     }
 
-    println!("\n✅ 已保存 {} 个主机到数据库", saved_count);
+    println!("\n✅ 已同步 {} 个主机到数据库（包含完整 VDI 字段）", saved_count);
     println!("💡 提示: 使用 `atp host update-ssh <id>` 更新主机 SSH 配置");
+
+    Ok(())
+}
+
+/// 同步 VDI 虚拟机到本地缓存
+async fn sync_vms(config_path: &str) -> Result<()> {
+    use atp_storage::{StorageManager, VdiCacheManager};
+
+    println!("🔄 同步 VDI 虚拟机到本地缓存\n");
+
+    let config = TestConfig::load_from_path(config_path)?;
+    let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
+
+    let client = create_vdi_client(vdi_config).await?;
+    
+    println!("📋 获取 VDI 虚拟机列表...");
+    let domains = client.domain().list_all().await?;
+    println!("   发现 {} 个虚拟机\n", domains.len());
+
+    // 连接数据库并创建缓存管理器
+    let storage_manager = StorageManager::new("~/.config/atp/data.db")
+        .await
+        .context("无法连接数据库")?;
+    let cache = VdiCacheManager::new(storage_manager);
+
+    // 使用缓存管理器同步虚拟机（包含完整的 60 个 VDI 字段）
+    let saved_count = cache.sync_domains(&domains).await?;
+
+    println!("✅ 已同步 {} 个虚拟机到本地缓存（完整 60 字段）", saved_count);
+    println!("💡 提示: 使用 `atp vdi list-vms` 查看虚拟机列表");
+
+    Ok(())
+}
+
+/// 同步所有 VDI 数据到本地缓存
+async fn sync_all(config_path: &str) -> Result<()> {
+    use atp_storage::{StorageManager, VdiCacheManager};
+
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║              同步所有 VDI 数据到本地缓存                       ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let config = TestConfig::load_from_path(config_path)?;
+    let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
+
+    let client = create_vdi_client(vdi_config).await?;
+    
+    // 连接数据库并创建缓存管理器
+    let storage_manager = StorageManager::new("~/.config/atp/data.db")
+        .await
+        .context("无法连接数据库")?;
+    let cache = VdiCacheManager::new(storage_manager);
+
+    // 1. 同步主机
+    println!("📋 步骤 1/4: 同步主机...");
+    let hosts = client.host().list_all().await?;
+    let hosts_count = cache.sync_hosts(&hosts).await?;
+    println!("   ✅ 同步 {} 个主机\n", hosts_count);
+
+    // 2. 同步虚拟机
+    println!("📋 步骤 2/4: 同步虚拟机...");
+    let domains = client.domain().list_all().await?;
+    let domains_count = cache.sync_domains(&domains).await?;
+    println!("   ✅ 同步 {} 个虚拟机\n", domains_count);
+
+    // 3. 同步存储池
+    println!("📋 步骤 3/4: 同步存储池...");
+    let storage_pools = client.storage().list_all_pools().await?;
+    let storage_pools_count = cache.sync_storage_pools(&storage_pools).await?;
+    println!("   ✅ 同步 {} 个存储池\n", storage_pools_count);
+
+    // 4. 同步存储卷
+    println!("📋 步骤 4/4: 同步存储卷...");
+    let storage_volumes = client.storage().list_all_volumes().await?;
+    let storage_volumes_count = cache.sync_storage_volumes(&storage_volumes).await?;
+    println!("   ✅ 同步 {} 个存储卷\n", storage_volumes_count);
+
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║                      同步完成                                  ║");
+    println!("╚════════════════════════════════════════════════════════════════╝");
+    println!();
+    println!("📊 同步统计:");
+    println!("   主机:     {} 个", hosts_count);
+    println!("   虚拟机:   {} 个", domains_count);
+    println!("   存储池:   {} 个", storage_pools_count);
+    println!("   存储卷:   {} 个", storage_volumes_count);
+    println!();
+    println!("💡 提示: 数据已缓存到本地，后续查询将使用本地数据");
 
     Ok(())
 }
@@ -1708,4 +1788,550 @@ async fn batch_set_auto_join_domain(
     );
 
     Ok(())
+}
+
+// ============================================
+// Gluster 脑裂修复
+// ============================================
+
+/// 脑裂修复上下文
+struct HealContext {
+    volume_name: String,
+    storage_pool_id: String,
+    host_clients: HashMap<String, GlusterClient>,
+    dry_run: bool,
+    auto_mode: bool,
+}
+
+/// 受影响的 VM 信息
+#[derive(Debug, Clone)]
+struct AffectedVm {
+    id: String,
+    name: String,
+    status: String,
+    status_code: i64,
+    host_id: String,
+    host_name: String,
+    disk_name: String,
+}
+
+/// Gluster 存储脑裂修复
+#[allow(clippy::too_many_arguments)]
+async fn heal_splitbrain(
+    config_path: &str,
+    pool_id: Option<&str>,
+    enable_ssh: bool,
+    ssh_user: &str,
+    ssh_password: Option<&str>,
+    ssh_key: Option<&str>,
+    dry_run: bool,
+    auto_mode: bool,
+    format: &str,
+) -> Result<()> {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║              Gluster 存储脑裂修复                               ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    if !enable_ssh {
+        bail!("脑裂修复需要 SSH 连接，请使用 --ssh 参数");
+    }
+
+    // 加载配置
+    let config = TestConfig::load_from_path(config_path)
+        .context(format!("无法加载配置文件: {}", config_path))?;
+    let vdi_config = config
+        .vdi
+        .as_ref()
+        .context("配置文件中未找到 VDI 平台配置")?;
+
+    // 1. 登录 VDI 平台
+    println!("📋 步骤 1/2: 连接 VDI 平台和存储池...");
+    let client = create_vdi_client(vdi_config).await?;
+    println!("   ✅ VDI 登录成功");
+
+    // 确定存储池 ID（交互式选择或使用指定的）
+    let selected_pool_id: String = match pool_id {
+        Some(id) => id.to_string(),
+        None => {
+            // 获取所有存储池并筛选 Gluster 类型
+            println!("\n📋 获取存储池列表...");
+            let all_pools = client.storage().list_all_pools().await?;
+            
+            // 筛选 Gluster 类型的存储池 (API 可能返回 type 或 poolType)
+            let gluster_pools: Vec<_> = all_pools
+                .iter()
+                .filter(|p| {
+                    let pool_type = p["type"].as_str()
+                        .or_else(|| p["poolType"].as_str())
+                        .unwrap_or("");
+                    pool_type == "gluster"
+                })
+                .collect();
+            
+            if gluster_pools.is_empty() {
+                // 显示所有存储池及其类型以便调试
+                println!("\n   ⚠️  未找到 Gluster 存储池，当前所有存储池：");
+                for pool in &all_pools {
+                    let name = pool["name"].as_str().unwrap_or("未知");
+                    let t = pool["type"].as_str()
+                        .or_else(|| pool["poolType"].as_str())
+                        .unwrap_or("未知");
+                    println!("      - {} (类型: {})", name, t);
+                }
+                bail!("未找到 Gluster 类型的存储池");
+            }
+            
+            println!("\n   发现 {} 个 Gluster 存储池：\n", gluster_pools.len());
+            println!("   {:<4} {:<40} {:<30}", "序号", "存储池 ID", "名称");
+            println!("   {}", "-".repeat(75));
+            
+            for (i, pool) in gluster_pools.iter().enumerate() {
+                let pool_name = pool["name"].as_str().unwrap_or("未知");
+                let id = pool["id"].as_str().unwrap_or("未知");
+                println!("   {:<4} {:<40} {:<30}", i + 1, id, pool_name);
+            }
+            
+            println!();
+            print!("   请选择要修复的存储池 (输入序号 1-{}): ", gluster_pools.len());
+            io::stdout().flush()?;
+            
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            
+            let choice: usize = input.trim().parse().context("请输入有效的数字")?;
+            
+            if choice == 0 || choice > gluster_pools.len() {
+                bail!("无效的选择: {}", choice);
+            }
+            
+            let selected = &gluster_pools[choice - 1];
+            selected["id"].as_str().context("无法获取存储池 ID")?.to_string()
+        }
+    };
+
+    // 查询存储池详情
+    let pool_detail = client.storage().get_pool(&selected_pool_id).await?;
+    let data = &pool_detail["data"];
+
+    // API 可能返回 type 或 poolType
+    let pool_type = data["type"].as_str()
+        .or_else(|| data["poolType"].as_str())
+        .unwrap_or("");
+    if pool_type != "gluster" {
+        bail!("存储池 {} 不是 Gluster 类型 (类型: {})", selected_pool_id, pool_type);
+    }
+
+    // 实际的 Gluster 卷名在 sourceName 字段中
+    let volume_name = data["sourceName"]
+        .as_str()
+        .or_else(|| data["volumeName"].as_str())
+        .or_else(|| data["volName"].as_str())
+        .context("无法获取 Gluster 卷名")?
+        .to_string();
+
+    let resource_pool_id = data["poolId"].as_str().unwrap_or("").to_string();
+
+    println!("   ✅ 存储池: {} (Gluster 卷: {})", selected_pool_id, volume_name);
+
+    // 获取关联主机
+    let hosts = if resource_pool_id.is_empty() {
+        client.host().list_all().await?
+    } else {
+        client.host().list_by_pool_id(&resource_pool_id).await?
+    };
+
+    let host_ips: Vec<(String, String)> = hosts
+        .iter()
+        .filter_map(|h| {
+            let ip = h["ip"].as_str()?.to_string();
+            let name = h["name"].as_str().unwrap_or(&ip).to_string();
+            Some((ip, name))
+        })
+        .collect();
+
+    if host_ips.is_empty() {
+        bail!("未找到关联主机");
+    }
+
+    println!("   ✅ 找到 {} 个关联主机\n", host_ips.len());
+
+    // 尝试连接到一个主机
+    let mut connected_host: Option<(String, GlusterClient)> = None;
+    let mut host_clients: HashMap<String, GlusterClient> = HashMap::new();
+
+    for (ip, name) in &host_ips {
+        info!("   尝试连接主机 {} ({})...", name, ip);
+
+        let ssh_config = if let Some(password) = ssh_password {
+            SshConfig::with_password(ip, ssh_user, password)
+        } else if let Some(key_path) = ssh_key {
+            SshConfig::with_key(ip, ssh_user, PathBuf::from(key_path))
+        } else {
+            SshConfig::with_default_key(ip, ssh_user)
+        };
+
+        match SshClient::connect(ssh_config).await {
+            Ok(ssh) => {
+                let gluster = GlusterClient::new(ssh);
+                if connected_host.is_none() {
+                    connected_host = Some((ip.clone(), GlusterClient::new(
+                        SshClient::connect(
+                            if let Some(password) = ssh_password {
+                                SshConfig::with_password(ip, ssh_user, password)
+                            } else if let Some(key_path) = ssh_key {
+                                SshConfig::with_key(ip, ssh_user, PathBuf::from(key_path))
+                            } else {
+                                SshConfig::with_default_key(ip, ssh_user)
+                            }
+                        ).await?
+                    )));
+                }
+                host_clients.insert(ip.clone(), gluster);
+                println!("   ✅ 已连接: {} ({})", name, ip);
+            }
+            Err(e) => {
+                warn!("   ⚠️  {} ({}) 连接失败: {}", name, ip, e);
+            }
+        }
+    }
+
+    let (primary_ip, primary_client) = connected_host.context("无法连接到任何主机")?;
+
+    // 2. 检测脑裂文件
+    println!("\n📋 步骤 2/2: 检测脑裂文件...");
+    let split_brain_info = primary_client.check_split_brain(&volume_name).await?;
+
+    if !split_brain_info.has_split_brain() {
+        println!("   ✅ 未检测到脑裂文件，存储状态正常！\n");
+        return Ok(());
+    }
+
+    println!(
+        "   ⚠️  发现 {} 个脑裂文件 (原始条目: {})\n",
+        split_brain_info.entry_count(),
+        split_brain_info.raw_count
+    );
+
+    // 获取主机映射
+    let hosts_all = client.host().list_all().await?;
+    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts_all);
+    let host_id_to_ip: HashMap<String, String> = hosts_all
+        .iter()
+        .filter_map(|h| {
+            let id = h["id"].as_str()?.to_string();
+            let ip = h["ip"].as_str()?.to_string();
+            Some((id, ip))
+        })
+        .collect();
+
+    // 获取存储池下的所有存储卷
+    let volumes = client.storage().list_volumes_by_pool(&selected_pool_id).await?;
+
+    // 创建修复上下文
+    let mut ctx = HealContext {
+        volume_name: volume_name.clone(),
+        storage_pool_id: selected_pool_id.clone(),
+        host_clients,
+        dry_run,
+        auto_mode,
+    };
+
+    // 统计结果
+    let mut success_count = 0;
+    let mut skip_count = 0;
+    let mut fail_count = 0;
+    let total = split_brain_info.entry_count();
+
+    // 逐个处理脑裂文件
+    for (idx, entry) in split_brain_info.entries.iter().enumerate() {
+        println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!(
+            "📄 处理文件 {}/{}: {} ({})",
+            idx + 1,
+            total,
+            entry.path,
+            entry.entry_type
+        );
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+        match process_split_brain_entry(
+            &client,
+            &mut ctx,
+            entry,
+            &volumes,
+            &host_id_to_name,
+            &host_id_to_ip,
+            &primary_ip,
+            format,
+        )
+        .await
+        {
+            Ok(true) => {
+                success_count += 1;
+                println!("   ✅ 文件 {} 修复成功!", entry.path);
+            }
+            Ok(false) => {
+                skip_count += 1;
+                println!("   ⏭️  文件 {} 已跳过", entry.path);
+            }
+            Err(e) => {
+                fail_count += 1;
+                println!("   ❌ 文件 {} 修复失败: {}", entry.path, e);
+            }
+        }
+    }
+
+    // 最终统计
+    println!("\n╔════════════════════════════════════════════════════════════════╗");
+    println!("║                        修复完成                                 ║");
+    println!(
+        "║  成功: {} 个文件   跳过: {} 个   失败: {} 个                   ║",
+        success_count, skip_count, fail_count
+    );
+    if !dry_run && success_count > 0 {
+        println!("║  ⚠️  受影响的 VM 保持关机状态，请手动启动                       ║");
+    }
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    Ok(())
+}
+
+/// 处理单个脑裂条目
+#[allow(clippy::too_many_arguments)]
+async fn process_split_brain_entry(
+    client: &atp_vdiplatform::VdiClient,
+    ctx: &mut HealContext,
+    entry: &SplitBrainEntry,
+    volumes: &[serde_json::Value],
+    host_id_to_name: &HashMap<String, String>,
+    host_id_to_ip: &HashMap<String, String>,
+    primary_ip: &str,
+    _format: &str,
+) -> Result<bool> {
+    // 1. 提取文件名用于查找 VM
+    let file_path = entry.effective_path();
+    let file_name = std::path::Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(file_path);
+
+    // 去掉文件扩展名
+    let disk_name = file_name.trim_end_matches(".qcow2").trim_end_matches(".raw");
+
+    println!("📋 识别受影响的虚拟机...");
+
+    // 2. 查找对应的 VM
+    let affected_vm = find_affected_vm(client, volumes, disk_name, host_id_to_name).await?;
+
+    match &affected_vm {
+        Some(vm) => {
+            println!("   ├── 所属 VM: {} (ID: {})", vm.name, vm.id);
+            println!("   ├── 磁盘名: {}", vm.disk_name);
+            println!("   ├── 所在主机: {}", vm.host_name);
+            println!("   └── 当前状态: {}", vm.status);
+        }
+        None => {
+            println!("   ⚠️  未找到对应的虚拟机，可能是孤立磁盘");
+        }
+    }
+
+    // 3. 如果 VM 正在运行，需要关闭
+    if let Some(ref vm) = affected_vm {
+        if vm.status_code == 1 {
+            // Running
+            println!("\n📋 关闭虚拟机...");
+            if ctx.dry_run {
+                println!("   📝 [预览模式] 将强制关闭 VM: {}", vm.name);
+            } else {
+                println!("   ⚠️  正在强制关闭 {}...", vm.name);
+                client
+                    .domain()
+                    .batch_force_shutdown(vec![vm.id.clone()])
+                    .await
+                    .context("强制关闭 VM 失败")?;
+
+                // 等待关机
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                println!("   ✅ 已关闭");
+            }
+        }
+    }
+
+    // 4. 显示副本信息
+    println!("\n📋 副本信息对比...");
+
+    if entry.brick_locations.len() < 2 {
+        println!("   ⚠️  副本数量不足，无法进行脑裂修复");
+        return Ok(false);
+    }
+
+    // 获取每个副本的文件统计信息
+    let mut replica_stats = Vec::new();
+    for (i, loc) in entry.brick_locations.iter().enumerate() {
+        let host_ip = &loc.host;
+
+        // 尝试获取文件统计信息
+        if let Some(gluster_client) = ctx.host_clients.get(host_ip) {
+            match gluster_client.get_file_stat(&loc.full_path).await {
+                Ok(stat) => {
+                    println!("   ┌─────────────────────────────────────────────────────────────────┐");
+                    println!("   │ 副本 {}: {}:{}", i + 1, loc.host, loc.full_path);
+                    println!("   │   大小: {}", stat.size_human());
+                    println!("   │   修改时间: {}", stat.mtime);
+                    println!("   └─────────────────────────────────────────────────────────────────┘");
+                    replica_stats.push((i + 1, loc.clone(), Some(stat)));
+                }
+                Err(e) => {
+                    println!("   副本 {}: {}:{} - 无法获取信息: {}", i + 1, loc.host, loc.full_path, e);
+                    replica_stats.push((i + 1, loc.clone(), None));
+                }
+            }
+        } else {
+            println!("   副本 {}: {}:{} - 未连接到主机", i + 1, loc.host, loc.full_path);
+            replica_stats.push((i + 1, loc.clone(), None));
+        }
+    }
+
+    // 显示参考信息
+    if let Some(ref vm) = affected_vm {
+        if let Some(ip) = host_id_to_ip.get(&vm.host_id) {
+            println!("\n   💡 参考信息: VM 上次运行在 {} ({})", vm.host_name, ip);
+        }
+    }
+
+    // 5. 让用户选择舍弃哪个副本
+    let discard_idx = if ctx.auto_mode {
+        // 自动模式：选择不是 VM 上次运行主机的副本
+        let vm_host_ip = affected_vm
+            .as_ref()
+            .and_then(|vm| host_id_to_ip.get(&vm.host_id));
+
+        let auto_choice = replica_stats
+            .iter()
+            .find(|(_, loc, _)| vm_host_ip.map_or(true, |ip| &loc.host != ip))
+            .map(|(idx, _, _)| *idx)
+            .unwrap_or(2); // 默认舍弃第二个
+
+        println!("\n   🤖 自动选择: 舍弃副本 {}", auto_choice);
+        auto_choice
+    } else if ctx.dry_run {
+        println!("\n   📝 [预览模式] 需要用户选择舍弃哪个副本");
+        return Ok(false);
+    } else {
+        // 交互模式
+        print!("\n   请选择要舍弃的副本 [1/2]: ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let choice = input.trim().parse::<usize>().unwrap_or(0);
+
+        if choice < 1 || choice > replica_stats.len() {
+            println!("   ⚠️  无效选择，跳过此文件");
+            return Ok(false);
+        }
+        choice
+    };
+
+    // 获取要舍弃的副本信息
+    let discard_replica = replica_stats
+        .iter()
+        .find(|(idx, _, _)| *idx == discard_idx)
+        .map(|(_, loc, _)| loc.clone())
+        .context("找不到选择的副本")?;
+
+    if ctx.dry_run {
+        println!("\n   📝 [预览模式] 将在 {} 上清除 AFR 属性", discard_replica.host);
+        return Ok(false);
+    }
+
+    // 6. 执行修复
+    println!("\n📋 执行修复...");
+
+    let gluster_client = ctx
+        .host_clients
+        .get(&discard_replica.host)
+        .context(format!("未连接到主机 {}", discard_replica.host))?;
+
+    // 清除 AFR 属性
+    let removed_count = gluster_client
+        .remove_all_afr_attributes(&discard_replica.full_path)
+        .await
+        .context("清除 AFR 属性失败")?;
+
+    println!("   ✅ 已清除 {} 上的 {} 个 AFR 属性", discard_replica.host, removed_count);
+
+    // 获取主客户端触发修复
+    let any_client = ctx.host_clients.values().next().context("无可用客户端")?;
+    any_client
+        .trigger_heal(&ctx.volume_name)
+        .await
+        .context("触发卷修复失败")?;
+    println!("   ✅ 已触发卷修复");
+
+    // 7. 等待修复完成
+    println!("\n📋 验证修复结果...");
+
+    let healed = any_client
+        .wait_for_heal(&ctx.volume_name, 10, 5)
+        .await
+        .context("等待修复完成失败")?;
+
+    if healed {
+        Ok(true)
+    } else {
+        println!("   ⚠️  修复可能仍在进行中，请稍后检查");
+        Ok(true) // 仍然认为成功，因为操作已执行
+    }
+}
+
+/// 查找受影响的 VM
+async fn find_affected_vm(
+    client: &atp_vdiplatform::VdiClient,
+    volumes: &[serde_json::Value],
+    disk_name: &str,
+    host_id_to_name: &HashMap<String, String>,
+) -> Result<Option<AffectedVm>> {
+    // 在存储卷中查找匹配的磁盘
+    for vol in volumes {
+        let vol_name = vol["name"].as_str().unwrap_or("");
+
+        // 检查是否匹配
+        if vol_name == disk_name || vol_name.contains(disk_name) || disk_name.contains(vol_name) {
+            let domain_id = vol["domainId"].as_str().unwrap_or("");
+            let domain_name = vol["domainName"].as_str().unwrap_or("");
+
+            if domain_id.is_empty() {
+                continue;
+            }
+
+            // 获取 VM 详情
+            let all_vms = client.domain().list_all().await?;
+            let vm = all_vms
+                .iter()
+                .find(|v| v["id"].as_str() == Some(domain_id));
+
+            if let Some(vm) = vm {
+                let host_id = vm["hostId"].as_str().unwrap_or("").to_string();
+                let host_name = host_id_to_name
+                    .get(&host_id)
+                    .cloned()
+                    .unwrap_or_else(|| host_id.clone());
+
+                return Ok(Some(AffectedVm {
+                    id: domain_id.to_string(),
+                    name: domain_name.to_string(),
+                    status: DomainStatus::from_code(vm["status"].as_i64().unwrap_or(-1))
+                        .display_name()
+                        .to_string(),
+                    status_code: vm["status"].as_i64().unwrap_or(-1),
+                    host_id,
+                    host_name,
+                    disk_name: vol_name.to_string(),
+                }));
+            }
+        }
+    }
+
+    Ok(None)
 }

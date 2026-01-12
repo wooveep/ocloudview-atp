@@ -35,4 +35,8 @@ pub enum GlusterError {
     /// Gluster 未运行
     #[error("Gluster 服务未运行")]
     GlusterNotRunning,
+
+    /// 卷不存在
+    #[error("Gluster 卷不存在: {0}")]
+    VolumeNotFound(String),
 }

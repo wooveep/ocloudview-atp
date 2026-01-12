@@ -1,10 +1,12 @@
 mod backup;
+mod cache_manager;
 mod connection;
 mod error;
 mod models;
 mod repositories;
 
 pub use backup::{BackupInfo, BackupManager};
+pub use cache_manager::{VdiCacheManager, DEFAULT_CACHE_TTL};
 pub use connection::StorageManager;
 pub use error::{Result, StorageError};
 pub use models::*;
@@ -18,7 +20,12 @@ pub struct Storage {
     reports: ReportRepository,
     scenarios: ScenarioRepository,
     hosts: HostRepository,
-    domain_host_mappings: DomainHostMappingRepository,
+    domains: DomainRepository,
+    pools: PoolRepository,
+    ovs: OvsRepository,
+    cascad_port_groups: CascadPortGroupRepository,
+    storage_pools: StoragePoolRepository,
+    storage_volumes: StorageVolumeRepository,
 }
 
 impl Storage {
@@ -30,7 +37,12 @@ impl Storage {
             reports: ReportRepository::new(pool.clone()),
             scenarios: ScenarioRepository::new(pool.clone()),
             hosts: HostRepository::new(pool.clone()),
-            domain_host_mappings: DomainHostMappingRepository::new(pool),
+            domains: DomainRepository::new(pool.clone()),
+            pools: PoolRepository::new(pool.clone()),
+            ovs: OvsRepository::new(pool.clone()),
+            cascad_port_groups: CascadPortGroupRepository::new(pool.clone()),
+            storage_pools: StoragePoolRepository::new(pool.clone()),
+            storage_volumes: StorageVolumeRepository::new(pool),
         }
     }
 
@@ -49,8 +61,33 @@ impl Storage {
         &self.hosts
     }
 
-    /// 获取虚拟机-主机映射仓储
-    pub fn domain_host_mappings(&self) -> &DomainHostMappingRepository {
-        &self.domain_host_mappings
+    /// 获取虚拟机仓储
+    pub fn domains(&self) -> &DomainRepository {
+        &self.domains
+    }
+
+    /// 获取资源池仓储
+    pub fn pools(&self) -> &PoolRepository {
+        &self.pools
+    }
+
+    /// 获取 OVS 仓储
+    pub fn ovs(&self) -> &OvsRepository {
+        &self.ovs
+    }
+
+    /// 获取级联端口组仓储
+    pub fn cascad_port_groups(&self) -> &CascadPortGroupRepository {
+        &self.cascad_port_groups
+    }
+
+    /// 获取存储池仓储
+    pub fn storage_pools(&self) -> &StoragePoolRepository {
+        &self.storage_pools
+    }
+
+    /// 获取存储卷仓储
+    pub fn storage_volumes(&self) -> &StorageVolumeRepository {
+        &self.storage_volumes
     }
 }

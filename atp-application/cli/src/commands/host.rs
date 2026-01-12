@@ -51,6 +51,25 @@ async fn add_host(id: &str, host: &str, uri: Option<String>) -> Result<()> {
         ssh_key_path: None,
         created_at: now,
         updated_at: now,
+        // VDI 扩展字段 - 手动添加的主机默认为 None
+        ip_v6: None,
+        status: None,
+        pool_id: None,
+        vmc_id: None,
+        manufacturer: None,
+        model: None,
+        cpu: None,
+        cpu_size: None,
+        memory: None,
+        physical_memory: None,
+        domain_limit: None,
+        extranet_ip: None,
+        extranet_ip_v6: None,
+        arch: None,
+        domain_cap_xml: None,
+        qemu_version: None,
+        libvirt_version: None,
+        cached_at: None, // 手动添加的主机不设置 cached_at
     };
 
     host_repo.upsert(&record).await?;

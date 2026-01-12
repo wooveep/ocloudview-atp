@@ -396,6 +396,21 @@ pub enum VdiAction {
         test_connection: bool,
     },
 
+    /// 同步 VDI 虚拟机到本地缓存（完整 60 字段）
+    SyncVms {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/atp.toml")]
+        config: String,
+    },
+
+    /// 同步所有 VDI 数据到本地缓存（主机、虚拟机、存储池、存储卷）
+    SyncAll {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/atp.toml")]
+        config: String,
+    },
+
+
     /// 查询虚拟机磁盘存储位置（支持 Gluster 分布式存储定位）
     DiskLocation {
         /// 配置文件路径
@@ -521,6 +536,45 @@ pub enum VdiAction {
         /// 预览模式
         #[arg(long)]
         dry_run: bool,
+
+        /// 输出格式 (table/json)
+        #[arg(short = 'f', long, default_value = "table")]
+        format: String,
+    },
+
+    /// Gluster 存储脑裂修复
+    HealSplitbrain {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/atp.toml")]
+        config: String,
+
+        /// Gluster 存储池 ID（可选，未指定时交互式选择）
+        #[arg(long)]
+        pool_id: Option<String>,
+
+        /// 启用 SSH 连接（必需）
+        #[arg(long)]
+        ssh: bool,
+
+        /// SSH 用户名
+        #[arg(long, default_value = "root")]
+        ssh_user: String,
+
+        /// SSH 密码（不建议在命令行使用，优先使用密钥认证）
+        #[arg(long)]
+        ssh_password: Option<String>,
+
+        /// SSH 私钥路径
+        #[arg(long)]
+        ssh_key: Option<String>,
+
+        /// 预览模式，只检测不修复
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 自动选择保留副本（基于 VM 上次运行主机）
+        #[arg(long)]
+        auto: bool,
 
         /// 输出格式 (table/json)
         #[arg(short = 'f', long, default_value = "table")]

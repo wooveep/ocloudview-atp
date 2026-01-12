@@ -4,6 +4,7 @@
 //! - 通过 getfattr 查询文件的实际 brick 位置
 //! - 解析 Gluster pathinfo 信息
 //! - 查询 Gluster 卷信息
+//! - **脑裂检测与修复**
 //!
 //! # 示例
 //!
@@ -22,14 +23,25 @@
 //! for replica in &location.replicas {
 //!     println!("主机: {}, Brick: {}", replica.host, replica.brick_path);
 //! }
+//!
+//! // 检查脑裂状态
+//! let split_brain = gluster.check_split_brain("gv0").await?;
+//! if split_brain.has_split_brain() {
+//!     println!("发现 {} 个脑裂文件", split_brain.entry_count());
+//! }
 //! ```
 
 mod client;
 mod error;
 mod models;
+mod parser;
 mod pathinfo;
 
 pub use client::GlusterClient;
 pub use error::{GlusterError, Result};
-pub use models::{GlusterBrick, GlusterFileLocation, GlusterReplica, GlusterVolume};
+pub use models::{
+    BrickLocation, FileStat, GlusterBrick, GlusterFileLocation, GlusterReplica, GlusterVolume,
+    SplitBrainEntry, SplitBrainEntryType, SplitBrainInfo,
+};
+pub use parser::{parse_afr_attributes, parse_split_brain_count, parse_split_brain_info, parse_stat_output};
 pub use pathinfo::parse_pathinfo;

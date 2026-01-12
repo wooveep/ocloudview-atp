@@ -46,7 +46,7 @@ pub struct ScenarioRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-/// 主机配置数据库模型
+/// 主机配置数据库模型（对标 VDI host 表 22 字段 + SSH 配置）
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct HostRecord {
     pub id: String,
@@ -61,6 +61,25 @@ pub struct HostRecord {
     pub ssh_key_path: Option<String>, // 密钥路径
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // VDI host 表扩展字段
+    pub ip_v6: Option<String>,
+    pub status: Option<i32>,
+    pub pool_id: Option<String>,
+    pub vmc_id: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub cpu: Option<String>,
+    pub cpu_size: Option<i32>,
+    pub memory: Option<f64>,
+    pub physical_memory: Option<f64>,
+    pub domain_limit: Option<i32>,
+    pub extranet_ip: Option<String>,
+    pub extranet_ip_v6: Option<String>,
+    pub arch: Option<String>,
+    pub domain_cap_xml: Option<String>,
+    pub qemu_version: Option<i64>,
+    pub libvirt_version: Option<i64>,
+    pub cached_at: Option<DateTime<Utc>>,
 }
 
 /// 性能指标数据库模型
@@ -76,15 +95,154 @@ pub struct ConnectionMetricRecord {
     pub avg_response_time: Option<f64>,
 }
 
-/// 虚拟机-主机映射数据库模型
+/// 资源池数据库模型（对标 VDI pool 表）
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct DomainHostMappingRecord {
-    pub domain_name: String,
-    pub host_id: String,
-    pub host_ip: String,
-    pub host_name: Option<String>,
-    pub os_type: Option<String>, // 操作系统类型: win10-64, linux, kylin, uos 等
-    pub updated_at: DateTime<Utc>,
+pub struct PoolRecord {
+    pub id: String,
+    pub name: Option<String>,
+    pub status: Option<i32>,
+    pub vmc_id: Option<String>,
+    pub cpu_over: Option<i32>,
+    pub memory_over: Option<i32>,
+    pub arch: Option<String>,
+    pub create_time: Option<DateTime<Utc>>,
+    pub update_time: Option<DateTime<Utc>>,
+    pub cached_at: Option<DateTime<Utc>>,
+}
+
+/// OVS 网络数据库模型（对标 VDI ovs 表）
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct OvsRecord {
+    pub id: String,
+    pub name: Option<String>,
+    pub vmc_id: Option<String>,
+    pub remark: Option<String>,
+    pub create_time: Option<DateTime<Utc>>,
+    pub update_time: Option<DateTime<Utc>>,
+    pub cached_at: Option<DateTime<Utc>>,
+}
+
+/// 级联端口组数据库模型（对标 VDI cascad_port_group 表）
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CascadPortGroupRecord {
+    pub id: String,
+    pub host_id: Option<String>,
+    pub physical_nic: Option<String>,
+    pub ovs_id: Option<String>,
+    pub create_time: Option<DateTime<Utc>>,
+    pub update_time: Option<DateTime<Utc>>,
+    pub cached_at: Option<DateTime<Utc>>,
+}
+
+/// 虚拟机数据库模型（对标 VDI domain 表 60 字段）
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DomainRecord {
+    pub id: String,
+    pub name: Option<String>,
+    pub is_model: Option<i32>,
+    pub status: Option<i32>,
+    pub is_connected: Option<i32>,
+    pub vmc_id: Option<String>,
+    pub pool_id: Option<String>,
+    pub host_id: Option<String>,
+    pub last_successful_host_id: Option<String>,
+    pub cpu: Option<i32>,
+    pub memory: Option<i32>,
+    pub iso_path: Option<String>,
+    pub is_clone_domain: Option<i32>,
+    pub clone_type: Option<String>,
+    pub mother_id: Option<String>,
+    pub snapshot_count: Option<i32>,
+    pub freeze: Option<i32>,
+    pub last_freeze_time: Option<DateTime<Utc>>,
+    pub command: Option<String>,
+    pub os_name: Option<String>,
+    pub os_edition: Option<String>,
+    pub system_type: Option<String>,
+    pub mainboard: Option<String>,
+    pub bootloader: Option<String>,
+    pub working_group: Option<String>,
+    pub desktop_pool_id: Option<String>,
+    pub user_id: Option<String>,
+    pub remark: Option<String>,
+    pub connect_time: Option<DateTime<Utc>>,
+    pub disconnect_time: Option<DateTime<Utc>>,
+    pub os_type: Option<String>,
+    pub soundcard_type: Option<String>,
+    pub domain_xml: Option<String>,
+    pub affinity_ip: Option<String>,
+    pub sockets: Option<i32>,
+    pub cores: Option<i32>,
+    pub threads: Option<i32>,
+    pub original_ip: Option<String>,
+    pub original_mac: Option<String>,
+    pub is_recycle: Option<i32>,
+    pub disable_alpha: Option<i32>,
+    pub graphics_card_num: Option<i32>,
+    pub independ_disk_cnt: Option<i32>,
+    pub mouse_mode: Option<String>,
+    pub domain_fake: Option<i32>,
+    pub host_bios_enable: Option<i32>,
+    pub host_model_enable: Option<i32>,
+    pub nested_virtual: Option<i32>,
+    pub admin_id: Option<String>,
+    pub admin_name: Option<String>,
+    pub allow_monitor: Option<i32>,
+    pub agent_version: Option<String>,
+    pub gpu_type: Option<String>,
+    pub auto_join_domain: Option<i32>,
+    pub vgpu_type: Option<String>,
+    pub keyboard_bus: Option<String>,
+    pub mouse_bus: Option<String>,
+    pub keep_alive: Option<i32>,
+    pub create_time: Option<DateTime<Utc>>,
+    pub update_time: Option<DateTime<Utc>>,
+    pub cached_at: Option<DateTime<Utc>>,
+}
+
+/// 存储池数据库模型（对标 VDI storage_pool 表）
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct StoragePoolRecord {
+    pub id: String,
+    pub name: Option<String>,
+    pub nfs_ip: Option<String>,
+    pub nfs_path: Option<String>,
+    pub status: Option<i32>,
+    pub pool_type: Option<String>,
+    pub path: Option<String>,
+    pub vmc_id: Option<String>,
+    pub pool_id: Option<String>,
+    pub host_id: Option<String>,
+    pub is_share: Option<i32>,
+    pub is_iso: Option<i32>,
+    pub remark: Option<String>,
+    pub source_host_name: Option<String>,
+    pub source_name: Option<String>,
+    pub create_time: Option<DateTime<Utc>>,
+    pub update_time: Option<DateTime<Utc>>,
+    pub cached_at: Option<DateTime<Utc>>,
+}
+
+/// 存储卷数据库模型（对标 VDI storage_volume 表）
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct StorageVolumeRecord {
+    pub id: String,
+    pub name: Option<String>,
+    pub filename: Option<String>,
+    pub storage_pool_id: Option<String>,
+    pub domain_id: Option<String>,
+    pub is_start_disk: Option<i32>,
+    pub size: Option<i64>,
+    pub domains: Option<String>,
+    pub is_recycle: Option<i32>,
+    pub read_iops_sec: Option<String>,
+    pub write_iops_sec: Option<String>,
+    pub read_bytes_sec: Option<String>,
+    pub write_bytes_sec: Option<String>,
+    pub bus_type: Option<String>,
+    pub create_time: Option<DateTime<Utc>>,
+    pub update_time: Option<DateTime<Utc>>,
+    pub cached_at: Option<DateTime<Utc>>,
 }
 
 /// 报告查询过滤器
