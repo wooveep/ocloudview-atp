@@ -410,7 +410,6 @@ pub enum VdiAction {
         config: String,
     },
 
-
     /// 查询虚拟机磁盘存储位置（支持 Gluster 分布式存储定位）
     DiskLocation {
         /// 配置文件路径
@@ -515,8 +514,9 @@ pub enum VdiAction {
         format: String,
     },
 
-    /// 批量设置 autoJoinDomain
-    SetAutoJoinDomain {
+    /// 批量设置自动加域 (autoJoinDomain)
+    #[command(name = "auto-ad")]
+    AutoAd {
         /// 配置文件路径
         #[arg(short, long, default_value = "config/atp.toml")]
         config: String,

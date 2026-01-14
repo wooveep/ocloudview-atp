@@ -2,17 +2,60 @@
 //!
 //! 测试场景执行引擎
 
-pub mod scenario;
 pub mod runner;
+pub mod scenario;
+pub mod ssh_manager;
+pub mod storage_ops;
 pub mod test_config;
+pub mod vdi_ops;
 
+pub use runner::{ExecutionReport, MultiTargetReport, ScenarioRunner, StepReport, StepStatus};
 pub use scenario::{
-    Scenario, ScenarioStep, Action, VerificationConfig,
-    TargetSelector, TargetSelectorConfig, TargetMode,
-    ParallelConfig, FailureStrategy, InputChannelConfig, InputChannelType,
+    Action, FailureStrategy, InputChannelConfig, InputChannelType, ParallelConfig, Scenario,
+    ScenarioStep, TargetMode, TargetSelector, TargetSelectorConfig, VerificationConfig,
 };
-pub use runner::{ScenarioRunner, ExecutionReport, StepReport, StepStatus, MultiTargetReport};
+pub use ssh_manager::{SshConnectionManager, SshParams};
+pub use storage_ops::{
+    // 脑裂修复
+    AffectedVm,
+    AutoReplicaSelector,
+    // 磁盘位置查询
+    DiskLocationInfo,
+    DiskLocationResult,
+    HealEntryResult,
+    HealReport,
+    HealStrategy,
+    InteractiveReplicaSelector,
+    ReplicaSelector,
+    ReplicaStat,
+    StorageOpsService,
+};
 pub use test_config::{TestConfig, VdiConfig};
+pub use vdi_ops::{
+    // Public utility functions
+    ensure_host_registered,
+    get_domain_libvirt_state,
+    list_host_domains_state,
+    matches_pattern,
+    // New batch operation results
+    BatchAssignResult,
+    BatchAutoAdResult,
+    BatchOpError,
+    BatchOperations,
+    BatchRenameResult,
+    BatchStartError,
+    BatchStartResult,
+    // New verification types
+    CompareResult,
+    LibvirtDomainState,
+    QgaVerifier,
+    QgaVerifyResult,
+    VdiBatchOps,
+    VdiVerifyOps,
+    VerifyResult,
+    VmInfo,
+    VmMatcher,
+};
 
 use thiserror::Error;
 

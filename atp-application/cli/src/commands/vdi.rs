@@ -1,48 +1,64 @@
 //! VDI 平台管理和验证命令
 
-use crate::commands::common::{
-    build_host_id_to_name_map_from_json, connect_libvirt, create_vdi_client,
-};
+use crate::commands::common::{connect_libvirt, create_vdi_client};
+use crate::commands::output::{output_formatted, TableRow};
 use crate::VdiAction;
 use anyhow::{bail, Context, Result};
-use atp_executor::TestConfig;
-use atp_gluster::{GlusterClient, SplitBrainEntry, SplitBrainEntryType};
-use atp_ssh_executor::{SshClient, SshConfig};
-use atp_vdiplatform::{
-    AssignmentPlan, BatchTaskRequest, DiskInfo, DomainStatus, HostStatusCode, RenamePlan,
-    VmMatchResult,
+use atp_executor::{
+    AffectedVm,
+    AutoReplicaSelector,
+    BatchAssignResult,
+    BatchAutoAdResult,
+    BatchOpError,
+    // 新增：批量操作结果
+    BatchOperations,
+    BatchRenameResult,
+    CompareResult,
+    // 新增：存储操作服务
+    DiskLocationInfo,
+    DiskLocationResult,
+    HealReport,
+    HealStrategy,
+    InteractiveReplicaSelector,
+    ReplicaStat,
+    SshConnectionManager,
+    SshParams,
+    StorageOpsService,
+    TestConfig,
+    VdiBatchOps,
+    VdiVerifyOps,
 };
+use atp_gluster::SplitBrainEntry;
+use atp_ssh_executor::{SshClient, SshConfig};
+use atp_storage::{Storage, StorageManager};
+use atp_transport::TransportManager;
+use atp_vdiplatform::{AssignmentPlan, DiskInfo, DomainStatus, HostStatusCode, RenamePlan};
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tracing::{debug, error, info, warn};
+use std::sync::Arc;
+use tracing::{error, info, warn};
 
-/// VDI 虚拟机信息
-#[derive(Debug, Clone)]
-struct VmInfo {
-    name: String,
-    status: String,
-    host: String,
-}
+// Implement TableRow for CompareResult to support table output
+impl TableRow for CompareResult {
+    fn headers() -> Vec<&'static str> {
+        vec!["虚拟机名称", "主机", "VDI状态", "libvirt状态", "一致性"]
+    }
 
-/// Libvirt 虚拟机信息
-#[derive(Debug, Clone)]
-struct LibvirtVmInfo {
-    name: String,
-    state: String,
-    cpu: u32,
-    memory_mb: u64,
-}
-
-/// 比对结果
-#[derive(Debug)]
-struct CompareResult {
-    vm_name: String,
-    vdi_status: String,
-    libvirt_status: String,
-    consistent: bool,
-    host: String,
+    fn row(&self) -> Vec<String> {
+        vec![
+            self.vm_name.clone(),
+            self.host.clone(),
+            self.vdi_status.clone(),
+            self.libvirt_status.clone(),
+            if self.consistent {
+                "✅".to_string()
+            } else {
+                "❌".to_string()
+            },
+        ]
+    }
 }
 
 pub async fn handle(action: VdiAction) -> Result<()> {
@@ -113,16 +129,14 @@ pub async fn handle(action: VdiAction) -> Result<()> {
             dry_run,
             format,
         } => batch_rename_vms(&config, &pattern, dry_run, &format).await?,
-        VdiAction::SetAutoJoinDomain {
+        VdiAction::AutoAd {
             config,
             pattern,
             enable,
             disable,
             dry_run,
             format,
-        } => {
-            batch_set_auto_join_domain(&config, &pattern, enable, disable, dry_run, &format).await?
-        }
+        } => batch_set_auto_ad(&config, &pattern, enable, disable, dry_run, &format).await?,
         VdiAction::HealSplitbrain {
             config,
             pool_id,
@@ -165,160 +179,21 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
         .as_ref()
         .context("配置文件中未找到 VDI 平台配置")?;
 
-    // 1. 登录 VDI 平台
-    println!("📋 步骤 1/4: 登录 VDI 平台...");
-    let client = create_vdi_client(vdi_config).await?;
-    println!("   ✅ VDI 登录成功\n");
+    // 初始化客户端和管理器
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
+    let transport_manager = Arc::new(TransportManager::default());
 
-    // 2. 从 VDI 获取主机列表
-    println!("📋 步骤 2/4: 获取 VDI 主机列表...");
-    let hosts = client.host().list_all().await?;
-    println!("   ✅ 找到 {} 个主机\n", hosts.len());
+    // 创建验证操作对象
+    let verify_ops = VdiVerifyOps::new(transport_manager, client);
 
-    // 创建主机ID到主机名的映射
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
+    // 执行验证
+    let verify_result = verify_ops.verify_consistency().await?;
 
-    // 3. 从 VDI 获取虚拟机列表
-    println!("📋 步骤 3/4: 获取 VDI 虚拟机列表...");
-    let vdi_domains = client.domain().list_all().await?;
+    // 统计结果
+    let total_vms = verify_result.total_vms;
+    let consistent_vms = verify_result.consistent_vms;
+    let inconsistent_vms = verify_result.inconsistent_vms;
 
-    let mut vdi_vms: HashMap<String, VmInfo> = HashMap::new();
-    for domain in &vdi_domains {
-        let name = domain["name"].as_str().unwrap_or("").to_string();
-        let status_code = domain["status"].as_i64().unwrap_or(-1);
-        let status = DomainStatus::from_code(status_code)
-            .display_name()
-            .to_string();
-        // 使用 hostId 获取主机名
-        let host_id = domain["hostId"].as_str().unwrap_or("");
-        let host = host_id_to_name
-            .get(host_id)
-            .cloned()
-            .unwrap_or_else(|| "".to_string());
-
-        if !name.is_empty() {
-            vdi_vms.insert(name.clone(), VmInfo { name, status, host });
-        }
-    }
-
-    println!("   ✅ VDI 虚拟机数量: {}\n", vdi_vms.len());
-
-    // 4. 连接 libvirt 并获取虚拟机信息
-    println!("📋 步骤 4/4: 连接 libvirt 并比对虚拟机状态...\n");
-
-    let mut all_results: Vec<CompareResult> = Vec::new();
-    let mut total_vms = 0;
-    let mut consistent_vms = 0;
-    let mut inconsistent_vms = 0;
-
-    for host in &hosts {
-        let host_name = host["name"].as_str().unwrap_or("");
-        let host_ip = host["ip"].as_str().unwrap_or("");
-        let host_status = HostStatusCode::from_code(host["status"].as_i64().unwrap_or(-1));
-
-        if !host_status.is_online() {
-            println!("   ⚠️  主机 {} 离线，跳过", host_name);
-            continue;
-        }
-
-        println!("   🔗 连接主机: {} ({})", host_name, host_ip);
-
-        // 尝试连接 libvirt
-        let mut libvirt_vms: HashMap<String, LibvirtVmInfo> = HashMap::new();
-
-        let conn_result = match connect_libvirt(host_name, host_ip).await {
-            Ok(result) => {
-                info!("   ✅ 连接成功: {}", result.uri);
-                result
-            }
-            Err(e) => {
-                error!("   ❌ {}", e);
-                continue;
-            }
-        };
-
-        // 获取虚拟机列表（包括所有状态的虚拟机）
-        if let Ok(conn_mutex) = conn_result.connection.get_connection().await {
-            let conn_guard = conn_mutex.lock().await;
-            if let Some(conn_ref) = conn_guard.as_ref() {
-                // 获取所有域（包括关闭状态的）
-                // flags: VIR_CONNECT_LIST_DOMAINS_ACTIVE | VIR_CONNECT_LIST_DOMAINS_INACTIVE = 3
-                if let Ok(domains) = conn_ref.list_all_domains(3) {
-                    for domain in &domains {
-                        if let Ok(name) = domain.get_name() {
-                            let state = if let Ok((st, _)) = domain.get_state() {
-                                let state_debug = format!("{:?}", st);
-                                state_debug
-                            } else {
-                                "Unknown".to_string()
-                            };
-
-                            let (cpu, memory) = if let Ok(info) = domain.get_info() {
-                                (info.nr_virt_cpu, info.memory / 1024)
-                            } else {
-                                (0, 0)
-                            };
-
-                            libvirt_vms.insert(
-                                name.clone(),
-                                LibvirtVmInfo {
-                                    name,
-                                    state,
-                                    cpu,
-                                    memory_mb: memory,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        println!("   📊 libvirt 虚拟机数量: {}", libvirt_vms.len());
-
-        // 比对虚拟机状态
-        for (vm_name, libvirt_vm) in &libvirt_vms {
-            total_vms += 1;
-
-            if let Some(vdi_vm) = vdi_vms.get(vm_name) {
-                // VDI 中存在该虚拟机，检查状态是否一致
-                let consistent = match (vdi_vm.status.as_str(), libvirt_vm.state.as_str()) {
-                    ("运行中", "1") | ("运行中", "Running") => true,
-                    ("挂起", "3") | ("挂起", "Paused") => true,
-                    ("关机", "5") | ("关机", "Shutoff") => true,
-                    _ => false,
-                };
-
-                if consistent {
-                    consistent_vms += 1;
-                } else {
-                    inconsistent_vms += 1;
-                }
-
-                all_results.push(CompareResult {
-                    vm_name: vm_name.clone(),
-                    vdi_status: vdi_vm.status.clone(),
-                    libvirt_status: libvirt_vm.state.clone(),
-                    consistent,
-                    host: host_name.to_string(),
-                });
-            } else {
-                // libvirt 上存在但 VDI 中不存在 - 不一致
-                inconsistent_vms += 1;
-                all_results.push(CompareResult {
-                    vm_name: vm_name.clone(),
-                    vdi_status: "不存在".to_string(),
-                    libvirt_status: libvirt_vm.state.clone(),
-                    consistent: false,
-                    host: host_name.to_string(),
-                });
-            }
-        }
-
-        println!();
-    }
-
-    // 输出结果
     println!("╔════════════════════════════════════════════════════════════════╗");
     println!("║                      验证结果汇总                              ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
@@ -336,82 +211,17 @@ async fn verify_consistency(config_path: &str, only_diff: bool, format: &str) ->
         }
     );
 
-    // 根据格式输出详细结果
-    match format {
-        "json" => output_json(&all_results, only_diff)?,
-        "yaml" => output_yaml(&all_results, only_diff)?,
-        _ => output_table(&all_results, only_diff),
-    }
+    // 输出详细结果
+    let filter = if only_diff {
+        Some(&(|r: &CompareResult| !r.consistent) as &dyn Fn(&CompareResult) -> bool)
+    } else {
+        None
+    };
+
+    output_formatted(&verify_result.results, format, filter)?;
 
     if inconsistent_vms > 0 {
         std::process::exit(1);
-    }
-
-    Ok(())
-}
-
-/// 表格格式输出
-fn output_table(results: &[CompareResult], only_diff: bool) {
-    println!("📋 详细对比结果:\n");
-    println!(
-        "{:<20} {:<15} {:<20} {:<15} {:<10}",
-        "虚拟机名称", "主机", "VDI状态", "libvirt状态", "一致性"
-    );
-    println!("{}", "-".repeat(80));
-
-    for result in results {
-        if only_diff && result.consistent {
-            continue;
-        }
-
-        let status_icon = if result.consistent { "✅" } else { "❌" };
-        println!(
-            "{:<20} {:<15} {:<20} {:<20} {}",
-            result.vm_name, result.host, result.vdi_status, result.libvirt_status, status_icon
-        );
-    }
-}
-
-/// JSON 格式输出
-fn output_json(results: &[CompareResult], only_diff: bool) -> Result<()> {
-    let filtered: Vec<_> = if only_diff {
-        results.iter().filter(|r| !r.consistent).collect()
-    } else {
-        results.iter().collect()
-    };
-
-    let json_data: Vec<serde_json::Value> = filtered
-        .iter()
-        .map(|r| {
-            json!({
-                "vm_name": r.vm_name,
-                "host": r.host,
-                "vdi_status": r.vdi_status,
-                "libvirt_status": r.libvirt_status,
-                "consistent": r.consistent
-            })
-        })
-        .collect();
-
-    println!("{}", serde_json::to_string_pretty(&json_data)?);
-    Ok(())
-}
-
-/// YAML 格式输出
-fn output_yaml(results: &[CompareResult], only_diff: bool) -> Result<()> {
-    let filtered: Vec<_> = if only_diff {
-        results.iter().filter(|r| !r.consistent).collect()
-    } else {
-        results.iter().collect()
-    };
-
-    for result in filtered {
-        println!("- vm_name: {}", result.vm_name);
-        println!("  host: {}", result.host);
-        println!("  vdi_status: {}", result.vdi_status);
-        println!("  libvirt_status: {}", result.libvirt_status);
-        println!("  consistent: {}", result.consistent);
-        println!();
     }
 
     Ok(())
@@ -459,13 +269,14 @@ async fn list_vms(config_path: &str, host_filter: Option<&str>) -> Result<()> {
     let config = TestConfig::load_from_path(config_path)?;
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
 
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
 
     let domains = client.domain().list_all().await?;
-    let hosts_vec = client.host().list_all().await?;
 
     // 建立主机ID到名称的映射
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts_vec);
+    let transport_manager = Arc::new(TransportManager::default());
+    let batch_ops = VdiBatchOps::new(Arc::clone(&transport_manager), Arc::clone(&client));
+    let host_id_to_name = batch_ops.build_host_id_to_name_map().await?;
 
     println!(
         "{:<25} {:<20} {:<15} {:<10} {:<15}",
@@ -557,7 +368,10 @@ async fn sync_hosts(config_path: &str, test_connection: bool) -> Result<()> {
         }
     }
 
-    println!("\n✅ 已同步 {} 个主机到数据库（包含完整 VDI 字段）", saved_count);
+    println!(
+        "\n✅ 已同步 {} 个主机到数据库（包含完整 VDI 字段）",
+        saved_count
+    );
     println!("💡 提示: 使用 `atp host update-ssh <id>` 更新主机 SSH 配置");
 
     Ok(())
@@ -573,7 +387,7 @@ async fn sync_vms(config_path: &str) -> Result<()> {
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
 
     let client = create_vdi_client(vdi_config).await?;
-    
+
     println!("📋 获取 VDI 虚拟机列表...");
     let domains = client.domain().list_all().await?;
     println!("   发现 {} 个虚拟机\n", domains.len());
@@ -587,7 +401,10 @@ async fn sync_vms(config_path: &str) -> Result<()> {
     // 使用缓存管理器同步虚拟机（包含完整的 60 个 VDI 字段）
     let saved_count = cache.sync_domains(&domains).await?;
 
-    println!("✅ 已同步 {} 个虚拟机到本地缓存（完整 60 字段）", saved_count);
+    println!(
+        "✅ 已同步 {} 个虚拟机到本地缓存（完整 60 字段）",
+        saved_count
+    );
     println!("💡 提示: 使用 `atp vdi list-vms` 查看虚拟机列表");
 
     Ok(())
@@ -605,7 +422,7 @@ async fn sync_all(config_path: &str) -> Result<()> {
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
 
     let client = create_vdi_client(vdi_config).await?;
-    
+
     // 连接数据库并创建缓存管理器
     let storage_manager = StorageManager::new("~/.config/atp/data.db")
         .await
@@ -652,6 +469,9 @@ async fn sync_all(config_path: &str) -> Result<()> {
 }
 
 /// 查询虚拟机磁盘存储位置
+///
+/// 支持查询本地存储和 Gluster 分布式存储的实际位置。
+/// 核心业务逻辑委托给 `StorageOpsService`，CLI 仅负责参数解析和输出格式化。
 async fn disk_location(
     config_path: &str,
     vm_id_or_name: &str,
@@ -675,191 +495,122 @@ async fn disk_location(
 
     // 1. 登录 VDI 平台
     println!("📋 步骤 1/3: 登录 VDI 平台...");
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
     println!("   ✅ VDI 登录成功\n");
 
-    // 2. 查找虚拟机
+    // 2. 查找虚拟机并查询磁盘位置
     println!("📋 步骤 2/3: 查找虚拟机 {}...", vm_id_or_name);
-    let domains = client.domain().list_all().await?;
-    let domain = domains
-        .iter()
-        .find(|d| {
-            d["id"].as_str() == Some(vm_id_or_name) || d["name"].as_str() == Some(vm_id_or_name)
-        })
-        .context(format!("未找到虚拟机: {}", vm_id_or_name))?;
 
-    let domain_id = domain["id"].as_str().unwrap_or("");
-    let domain_name = domain["name"].as_str().unwrap_or("");
-    println!("   ✅ 找到虚拟机: {} ({})\n", domain_name, domain_id);
-
-    // 3. 获取磁盘信息
-    println!("📋 步骤 3/3: 获取磁盘信息...");
-    let disk_values = client.domain().get_disks(domain_id).await?;
-    let disks: Vec<DiskInfo> = disk_values
-        .into_iter()
-        .filter_map(|v| serde_json::from_value(v).ok())
-        .collect();
-    println!("   ✅ 找到 {} 个磁盘\n", disks.len());
-
-    if disks.is_empty() {
-        println!("⚠️  该虚拟机没有磁盘");
-        return Ok(());
-    }
-
-    // 检查是否有 Gluster 存储的磁盘
-    let has_gluster = disks.iter().any(|d| d.is_gluster());
-
-    // 为每个 Gluster 磁盘查询存储池关联的主机
-    let mut gluster_clients: HashMap<String, Option<GlusterClient>> = HashMap::new();
-
-    if has_gluster && enable_ssh {
-        use atp_storage::{Storage, StorageManager};
-
-        println!("🔗 查询 Gluster 存储池关联主机...\n");
-
-        // 尝试连接数据库获取 SSH 配置
-        let db_ssh_config = match StorageManager::new("~/.config/atp/data.db").await {
-            Ok(storage_manager) => {
-                let storage = Storage::from_manager(&storage_manager);
-                // 获取所有主机的 SSH 配置 (后面按 IP 匹配)
-                let hosts = storage.hosts().list_all().await.ok();
-                hosts
-            }
+    if enable_ssh {
+        // 使用 StorageOpsService 查询（支持 Gluster 位置）
+        // 创建 SSH 连接管理器（带存储支持，自动从数据库获取密码）
+        let storage = match StorageManager::new("~/.config/atp/data.db").await {
+            Ok(manager) => Some(Arc::new(Storage::from_manager(&manager))),
             Err(_) => None,
         };
 
-        // 收集所有 Gluster 磁盘的存储池 ID
-        let gluster_pool_ids: std::collections::HashSet<String> = disks
-            .iter()
-            .filter(|d| d.is_gluster())
-            .map(|d| d.storage_pool_id.clone())
-            .collect();
-
-        for storage_pool_id in &gluster_pool_ids {
-            // 查询存储池详情
-            info!("   查询存储池 {}...", storage_pool_id);
-            let pool_detail = client.storage().get_pool(storage_pool_id).await?;
-
-            // API 返回格式: { "status": 0, "data": { "poolId": "xxx", ... } }
-            // 需要从 data 中获取 poolId
-            let data = &pool_detail["data"];
-
-            // 获取资源池 poolId
-            let resource_pool_id = data["poolId"].as_str().unwrap_or("").to_string();
-
-            if resource_pool_id.is_empty() {
-                warn!("   存储池 {} 没有关联资源池", storage_pool_id);
-                gluster_clients.insert(storage_pool_id.clone(), None);
-                continue;
-            }
-
-            info!(
-                "   存储池 {} 关联资源池: {}",
-                storage_pool_id, resource_pool_id
-            );
-
-            // 根据资源池 ID 查询关联主机
-            let hosts = client.host().list_by_pool_id(&resource_pool_id).await?;
-            let host_ips: Vec<String> = hosts
-                .iter()
-                .filter_map(|h| h["ip"].as_str().map(|s| s.to_string()))
-                .filter(|ip| !ip.is_empty())
-                .collect();
-
-            info!("   找到 {} 个关联主机: {:?}", host_ips.len(), host_ips);
-
-            // 尝试连接主机
-            let mut connected_client = None;
-            for host_ip in &host_ips {
-                info!("   尝试连接 {}...", host_ip);
-
-                // 优先级: 1. 命令行参数 2. 数据库配置 3. 默认值
-                let ssh_config = if let Some(password) = ssh_password {
-                    // 命令行指定了密码
-                    SshConfig::with_password(host_ip, ssh_user, password)
-                } else if let Some(key_path) = ssh_key {
-                    // 命令行指定了密钥
-                    SshConfig::with_key(host_ip, ssh_user, PathBuf::from(key_path))
-                } else if let Some(ref hosts) = db_ssh_config {
-                    // 尝试从数据库获取 SSH 配置 (按 IP 或 host 匹配)
-                    let db_host = hosts.iter().find(|h| {
-                        h.host == *host_ip
-                            || h.metadata.as_ref().map_or(false, |m| m.contains(host_ip))
-                    });
-
-                    if let Some(host_record) = db_host {
-                        let username = host_record.ssh_username.as_deref().unwrap_or(ssh_user);
-                        let port = host_record.ssh_port.unwrap_or(22) as u16;
-
-                        if let Some(ref key_path) = host_record.ssh_key_path {
-                            info!(
-                                "   使用数据库 SSH 配置: {}@{}:{} (key: {})",
-                                username, host_ip, port, key_path
-                            );
-                            SshConfig::with_key(host_ip, username, PathBuf::from(key_path))
-                                .port(port)
-                        } else {
-                            info!("   使用数据库 SSH 配置: {}@{}:{}", username, host_ip, port);
-                            SshConfig::with_default_key(host_ip, username).port(port)
-                        }
-                    } else {
-                        // 数据库中没有此主机，使用默认配置
-                        SshConfig::with_default_key(host_ip, ssh_user)
-                    }
-                } else {
-                    // 无数据库，使用默认配置
-                    SshConfig::with_default_key(host_ip, ssh_user)
-                };
-
-                match SshClient::connect(ssh_config).await {
-                    Ok(ssh) => {
-                        println!(
-                            "   ✅ SSH 连接成功: {} (存储池 {})",
-                            host_ip, storage_pool_id
-                        );
-                        connected_client = Some(GlusterClient::new(ssh));
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("   ⚠️  {} 连接失败: {}", host_ip, e);
-                    }
-                }
-            }
-
-            if connected_client.is_none() && !host_ips.is_empty() {
-                println!("   ⚠️  存储池 {} 所有主机连接失败", storage_pool_id);
-            }
-
-            gluster_clients.insert(storage_pool_id.clone(), connected_client);
+        let mut ssh_manager = SshConnectionManager::new(ssh_user);
+        if let Some(s) = storage {
+            ssh_manager = ssh_manager.with_storage(s);
         }
 
-        println!();
-    } else if has_gluster && !enable_ssh {
-        println!("💡 提示: 使用 --ssh 参数可查询 Gluster 实际 brick 位置\n");
-    }
+        // 创建存储操作服务
+        let mut service = StorageOpsService::new(Arc::clone(&client), ssh_manager);
 
-    // 输出结果
-    match format {
-        "json" => output_disk_location_json(&disks, &gluster_clients, domain_name).await?,
-        _ => output_disk_location_table(&disks, &gluster_clients, domain_name).await?,
+        // 构建 SSH 参数
+        let ssh_params = SshParams {
+            user: ssh_user.to_string(),
+            password: ssh_password.map(|s| s.to_string()),
+            key_path: ssh_key.map(PathBuf::from),
+        };
+
+        // 执行查询（核心逻辑在 executor 层）
+        let result = service
+            .query_disk_location(vm_id_or_name, &ssh_params)
+            .await?;
+        println!(
+            "   ✅ 找到虚拟机: {} ({})\n",
+            result.domain_name, result.domain_id
+        );
+
+        if result.disks.is_empty() {
+            println!("⚠️  该虚拟机没有磁盘");
+            return Ok(());
+        }
+
+        println!("📋 步骤 3/3: 获取磁盘信息...");
+        println!("   ✅ 找到 {} 个磁盘\n", result.disks.len());
+
+        // 输出结果（CLI 层职责）
+        match format {
+            "json" => output_disk_location_result_json(&result)?,
+            _ => output_disk_location_result_table(&result)?,
+        }
+    } else {
+        // 不使用 SSH，仅显示基本磁盘信息
+        let domains = client.domain().list_all().await?;
+        let domain = domains
+            .iter()
+            .find(|d| {
+                d["id"].as_str() == Some(vm_id_or_name) || d["name"].as_str() == Some(vm_id_or_name)
+            })
+            .context(format!("未找到虚拟机: {}", vm_id_or_name))?;
+
+        let domain_id = domain["id"].as_str().unwrap_or("");
+        let domain_name = domain["name"].as_str().unwrap_or("");
+        println!("   ✅ 找到虚拟机: {} ({})\n", domain_name, domain_id);
+
+        println!("📋 步骤 3/3: 获取磁盘信息...");
+        let disk_values = client.domain().get_disks(domain_id).await?;
+        let disks: Vec<DiskInfo> = disk_values
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        println!("   ✅ 找到 {} 个磁盘\n", disks.len());
+
+        if disks.is_empty() {
+            println!("⚠️  该虚拟机没有磁盘");
+            return Ok(());
+        }
+
+        let has_gluster = disks.iter().any(|d| d.is_gluster());
+        if has_gluster {
+            println!("💡 提示: 使用 --ssh 参数可查询 Gluster 实际 brick 位置\n");
+        }
+
+        // 简化输出（无 Gluster 位置）
+        let result = DiskLocationResult {
+            domain_name: domain_name.to_string(),
+            domain_id: domain_id.to_string(),
+            disks: disks
+                .into_iter()
+                .map(|disk| DiskLocationInfo {
+                    disk,
+                    gluster_location: None,
+                    error: None,
+                })
+                .collect(),
+        };
+
+        match format {
+            "json" => output_disk_location_result_json(&result)?,
+            _ => output_disk_location_result_table(&result)?,
+        }
     }
 
     Ok(())
 }
 
-/// 表格格式输出磁盘位置
-async fn output_disk_location_table(
-    disks: &[DiskInfo],
-    gluster_clients: &HashMap<String, Option<GlusterClient>>,
-    domain_name: &str,
-) -> Result<()> {
+/// 表格格式输出磁盘位置（使用 DiskLocationResult）
+fn output_disk_location_result_table(result: &DiskLocationResult) -> Result<()> {
     println!("╔════════════════════════════════════════════════════════════════╗");
     println!("║                      磁盘存储位置详情                          ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-    println!("虚拟机: {}\n", domain_name);
+    println!("虚拟机: {}\n", result.domain_name);
 
-    for (i, disk) in disks.iter().enumerate() {
+    for (i, disk_info) in result.disks.iter().enumerate() {
+        let disk = &disk_info.disk;
         let boot_label = if disk.is_boot_disk() {
             " [启动盘]"
         } else {
@@ -874,31 +625,24 @@ async fn output_disk_location_table(
         println!("   大小:       {} GB", disk.size);
         println!("   总线类型:   {}", disk.bus_type);
 
-        // 如果是 Gluster 存储，尝试获取实际位置
+        // 显示 Gluster 位置信息（如果有）
         if disk.is_gluster() {
-            if let Some(Some(ref client)) = gluster_clients.get(&disk.storage_pool_id) {
+            if let Some(ref location) = disk_info.gluster_location {
                 println!("\n   🔍 Gluster 实际存储位置:");
-                match client.get_file_location(&disk.vol_full_path).await {
-                    Ok(location) => {
-                        if let Some(vol_name) = &location.volume_name {
-                            println!("      卷名:    {}", vol_name);
-                        }
-                        println!("      副本数:  {}", location.replica_count());
-                        for (j, replica) in location.replicas.iter().enumerate() {
-                            println!(
-                                "      副本 {}: {}:{}",
-                                j + 1,
-                                replica.host,
-                                replica.file_path
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        println!("      ⚠️  查询失败: {}", e);
-                    }
+                if let Some(vol_name) = &location.volume_name {
+                    println!("      卷名:    {}", vol_name);
                 }
-            } else if gluster_clients.contains_key(&disk.storage_pool_id) {
-                println!("\n   ⚠️  无法连接存储池关联主机");
+                println!("      副本数:  {}", location.replica_count());
+                for (j, replica) in location.replicas.iter().enumerate() {
+                    println!(
+                        "      副本 {}: {}:{}",
+                        j + 1,
+                        replica.host,
+                        replica.file_path
+                    );
+                }
+            } else if let Some(ref err) = disk_info.error {
+                println!("\n   ⚠️  查询失败: {}", err);
             } else {
                 println!("\n   💡 使用 --ssh 查询 Gluster brick 位置");
             }
@@ -910,15 +654,12 @@ async fn output_disk_location_table(
     Ok(())
 }
 
-/// JSON 格式输出磁盘位置
-async fn output_disk_location_json(
-    disks: &[DiskInfo],
-    gluster_clients: &HashMap<String, Option<GlusterClient>>,
-    domain_name: &str,
-) -> Result<()> {
+/// JSON 格式输出磁盘位置（使用 DiskLocationResult）
+fn output_disk_location_result_json(result: &DiskLocationResult) -> Result<()> {
     let mut disk_results = Vec::new();
 
-    for disk in disks {
+    for disk_info in &result.disks {
+        let disk = &disk_info.disk;
         let mut disk_json = json!({
             "id": disk.id,
             "name": disk.name,
@@ -933,42 +674,39 @@ async fn output_disk_location_json(
             "is_shared": disk.is_shared(),
         });
 
-        // 如果是 Gluster 存储，尝试获取实际位置
-        if disk.is_gluster() {
-            if let Some(Some(ref client)) = gluster_clients.get(&disk.storage_pool_id) {
-                match client.get_file_location(&disk.vol_full_path).await {
-                    Ok(location) => {
-                        let replicas: Vec<serde_json::Value> = location
-                            .replicas
-                            .iter()
-                            .map(|r| {
-                                json!({
-                                    "host": r.host,
-                                    "brick_path": r.brick_path,
-                                    "file_path": r.file_path,
-                                })
-                            })
-                            .collect();
+        // 添加 Gluster 位置信息
+        if let Some(ref location) = disk_info.gluster_location {
+            let replicas: Vec<serde_json::Value> = location
+                .replicas
+                .iter()
+                .map(|r| {
+                    json!({
+                        "host": r.host,
+                        "brick_path": r.brick_path,
+                        "file_path": r.file_path,
+                    })
+                })
+                .collect();
 
-                        disk_json["gluster_location"] = json!({
-                            "volume_name": location.volume_name,
-                            "replica_count": location.replica_count(),
-                            "replicas": replicas,
-                        });
-                    }
-                    Err(e) => {
-                        disk_json["gluster_location_error"] = json!(e.to_string());
-                    }
-                }
-            }
+            disk_json["gluster_location"] = json!({
+                "volume_name": location.volume_name,
+                "replica_count": location.replica_count(),
+                "replicas": replicas,
+            });
+        }
+
+        // 添加错误信息（如果有）
+        if let Some(ref err) = disk_info.error {
+            disk_json["gluster_location_error"] = json!(err);
         }
 
         disk_results.push(disk_json);
     }
 
     let output = json!({
-        "domain_name": domain_name,
-        "disk_count": disks.len(),
+        "domain_name": result.domain_name,
+        "domain_id": result.domain_id,
+        "disk_count": result.disks.len(),
         "disks": disk_results,
     });
 
@@ -981,95 +719,9 @@ async fn output_disk_location_json(
 // 批量操作命令实现
 // ============================================================================
 
-/// 模式匹配函数
-/// 支持: * (全部), prefix* (前缀), *suffix (后缀), *middle* (包含), exact (精确)
-fn matches_pattern(name: &str, pattern: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-
-    let starts_with_star = pattern.starts_with('*');
-    let ends_with_star = pattern.ends_with('*');
-
-    match (starts_with_star, ends_with_star) {
-        (true, true) if pattern.len() > 2 => {
-            // *middle* - 包含匹配
-            let middle = &pattern[1..pattern.len() - 1];
-            name.contains(middle)
-        }
-        (true, true) => {
-            // 只有 ** 或 * 的情况
-            true
-        }
-        (true, false) => {
-            // *suffix - 后缀匹配
-            let suffix = &pattern[1..];
-            name.ends_with(suffix)
-        }
-        (false, true) => {
-            // prefix* - 前缀匹配
-            let prefix = &pattern[..pattern.len() - 1];
-            name.starts_with(prefix)
-        }
-        (false, false) => {
-            // exact - 精确匹配
-            name == pattern
-        }
-    }
-}
-
-/// 获取匹配模式的虚拟机列表
-async fn get_matching_vms(
-    client: &atp_vdiplatform::VdiClient,
-    pattern: &str,
-    host_id_to_name: &HashMap<String, String>,
-) -> Result<Vec<VmMatchResult>> {
-    let domains = client.domain().list_all().await?;
-
-    let mut results = Vec::new();
-    for domain in &domains {
-        let name = domain["name"].as_str().unwrap_or("").to_string();
-        if !matches_pattern(&name, pattern) {
-            continue;
-        }
-
-        let id = domain["id"].as_str().unwrap_or("").to_string();
-        let status_code = domain["status"].as_i64().unwrap_or(-1);
-        let status = DomainStatus::from_code(status_code)
-            .display_name()
-            .to_string();
-        let host_id = domain["hostId"].as_str().unwrap_or("").to_string();
-        let host_name = host_id_to_name.get(&host_id).cloned().unwrap_or_default();
-
-        // 获取绑定用户信息 - API 只返回 userId，不返回用户名
-        let bound_user_id = domain["userId"].as_str()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-        // 使用 userId 作为 bound_user，因为 API 不返回用户名
-        let bound_user = bound_user_id.clone();
-        let ip = domain["ip"].as_str().map(|s| s.to_string());
-        let cpu = domain["cpuNum"].as_i64();
-        let memory = domain["memory"].as_i64();
-
-        results.push(VmMatchResult {
-            id,
-            name,
-            status,
-            status_code,
-            bound_user,
-            bound_user_id,
-            host_id,
-            host_name,
-            ip,
-            cpu,
-            memory,
-        });
-    }
-
-    Ok(results)
-}
-
 /// 批量启动虚拟机
+///
+/// CLI 层仅负责参数解析和输出格式化，核心逻辑委托给 VdiBatchOps
 async fn batch_start_vms(
     config_path: &str,
     pattern: &str,
@@ -1077,38 +729,34 @@ async fn batch_start_vms(
     verify: bool,
     format: &str,
 ) -> Result<()> {
+    use atp_executor::{BatchOperations, VdiBatchOps, VmInfo};
+    use atp_transport::{TransportConfig, TransportManager};
+    use std::sync::Arc;
+
     println!("╔════════════════════════════════════════════════════════════════╗");
     println!("║                    批量启动虚拟机                              ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-    // 加载配置
+    // 加载配置并创建 VDI 客户端
     let config = TestConfig::load_from_path(config_path)?;
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
-
-    // 登录 VDI
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
     println!("✅ VDI 登录成功\n");
 
-    // 获取主机映射
-    let hosts = client.host().list_all().await?;
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
+    // 创建核心批量操作器
+    let transport_manager = Arc::new(TransportManager::new(TransportConfig::default()));
+    let batch_ops = VdiBatchOps::new(transport_manager, client);
 
-    // 构建主机 ID 到 IP 的映射
-    let host_id_to_ip: HashMap<String, String> = hosts
-        .iter()
-        .filter_map(|h| {
-            let id = h["id"].as_str()?.to_string();
-            let ip = h["ip"].as_str()?.to_string();
-            Some((id, ip))
-        })
-        .collect();
-
-    // 获取匹配的虚拟机
+    // 使用核心模块获取匹配的虚拟机
     println!("🔍 匹配模式: {}\n", pattern);
-    let all_vms = get_matching_vms(&client, pattern, &host_id_to_name).await?;
+    let all_vms = batch_ops.get_matching_vms(pattern).await?;
 
     // 过滤关机状态的虚拟机 (VDI 平台: status=0 为 Shutoff)
-    let vms_to_start: Vec<_> = all_vms.iter().filter(|vm| vm.status_code == 0).collect();
+    let vms_to_start: Vec<_> = all_vms
+        .iter()
+        .filter(|vm| vm.status_code == 0)
+        .cloned()
+        .collect();
 
     if vms_to_start.is_empty() {
         println!("⚠️  没有找到需要启动的关机虚拟机");
@@ -1117,6 +765,7 @@ async fn batch_start_vms(
 
     println!("📋 找到 {} 个关机虚拟机:\n", vms_to_start.len());
 
+    // 输出格式化 (CLI 职责)
     match format {
         "json" => {
             let json_data: Vec<_> = vms_to_start
@@ -1146,79 +795,41 @@ async fn batch_start_vms(
         return Ok(());
     }
 
-    // 执行批量启动
+    // 使用核心模块执行批量启动
     println!("\n🚀 正在启动虚拟机...");
-    let vm_ids: Vec<String> = vms_to_start.iter().map(|vm| vm.id.clone()).collect();
-    let request = BatchTaskRequest::new(vm_ids);
-    let response = client.domain().batch_start(request).await?;
+    let result = batch_ops.batch_start(&vms_to_start, verify).await?;
 
     println!("\n✅ 批量启动命令已发送");
-    if !response.error_list.is_empty() {
+    println!("   成功: {}", result.success_count);
+
+    if !result.failed_vms.is_empty() {
         println!("⚠️  部分虚拟机启动失败:");
-        for err in &response.error_list {
-            let vm_id = err.id.as_deref().unwrap_or("unknown");
-            let error_msg = err.error.as_deref().unwrap_or("未知错误");
-            println!("   - {}: {}", vm_id, error_msg);
+        for err in &result.failed_vms {
+            println!("   - {}: {}", err.vm_id, err.error);
         }
     }
 
-    // QGA 验证
-    if verify {
+    // QGA 验证结果输出 (CLI 职责)
+    if let Some(ref verify_results) = result.verification_results {
         println!("\n╔════════════════════════════════════════════════════════════════╗");
-        println!("║                    QGA 启动验证                                ║");
+        println!("║                    QGA 验证结果                                ║");
         println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-        // 等待初始延迟 (30秒)
-        println!("⏳ 等待虚拟机启动 (30秒)...");
-        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-
-        // 准备验证任务
-        let vms_for_verify: Vec<_> = vms_to_start
-            .iter()
-            .map(|vm| {
-                let host_ip = host_id_to_ip.get(&vm.host_id).cloned().unwrap_or_default();
-                (
-                    vm.name.clone(),
-                    vm.host_name.clone(),
-                    vm.host_id.clone(),
-                    host_ip,
-                )
-            })
-            .collect();
-
-        println!("🔍 开始并行验证 {} 个虚拟机...\n", vms_for_verify.len());
-
-        // 并行验证所有 VM
-        let verify_results = verify_vms_with_qga(&vms_for_verify).await;
-
-        // 输出验证结果
-        let mut success_count = 0;
-        let mut failed_vms: Vec<(String, String, String)> = Vec::new();
-
-        for (vm_name, host_name, success, error_msg) in &verify_results {
-            if *success {
-                success_count += 1;
-                info!("✅ {} ({}) - QGA 验证成功", vm_name, host_name);
-            } else {
-                failed_vms.push((vm_name.clone(), host_name.clone(), error_msg.clone()));
-            }
-        }
-
-        println!("\n╔════════════════════════════════════════════════════════════════╗");
-        println!("║                    验证结果报告                                ║");
-        println!("╚════════════════════════════════════════════════════════════════╝\n");
+        let success_count = verify_results.iter().filter(|r| r.success).count();
+        let failed_results: Vec<_> = verify_results.iter().filter(|r| !r.success).collect();
 
         println!("📊 验证统计:");
-        println!("   总数: {}", vms_for_verify.len());
+        println!("   总数: {}", verify_results.len());
         println!("   成功: {} ✅", success_count);
-        println!("   失败: {} ❌", failed_vms.len());
+        println!("   失败: {} ❌", failed_results.len());
 
-        if !failed_vms.is_empty() {
+        if !failed_results.is_empty() {
             println!("\n❌ 未成功启动的虚拟机列表:");
             println!("{:<30} {:<20} {:<30}", "虚拟机名称", "主机", "错误原因");
             println!("{}", "-".repeat(80));
-            for (vm_name, host_name, error_msg) in &failed_vms {
-                println!("{:<30} {:<20} {:<30}", vm_name, host_name, error_msg);
+            for r in &failed_results {
+                let error = r.error_msg.as_deref().unwrap_or("未知错误");
+                println!("{:<30} {:<20} {:<30}", r.vm_name, r.host_name, error);
             }
 
             // 如果有失败的虚拟机，以非零状态退出
@@ -1227,105 +838,6 @@ async fn batch_start_vms(
     }
 
     Ok(())
-}
-
-/// 通过 QGA 验证虚拟机是否启动成功
-/// 返回: Vec<(vm_name, host_name, success, error_message)>
-async fn verify_vms_with_qga(
-    vms: &[(String, String, String, String)], // (vm_name, host_name, host_id, host_ip)
-) -> Vec<(String, String, bool, String)> {
-    use futures::future::join_all;
-
-    const MAX_RETRIES: u32 = 3;
-    const RETRY_DELAY_SECS: u64 = 20;
-
-    let tasks: Vec<_> = vms
-        .iter()
-        .map(|(vm_name, host_name, _host_id, host_ip)| {
-            let vm_name = vm_name.clone();
-            let host_name = host_name.clone();
-            let host_ip = host_ip.clone();
-
-            async move {
-                let result = verify_single_vm_with_qga(
-                    &vm_name,
-                    &host_name,
-                    &host_ip,
-                    MAX_RETRIES,
-                    RETRY_DELAY_SECS,
-                )
-                .await;
-                match result {
-                    Ok(()) => (vm_name, host_name, true, String::new()),
-                    Err(e) => (vm_name, host_name, false, e.to_string()),
-                }
-            }
-        })
-        .collect();
-
-    join_all(tasks).await
-}
-
-/// 验证单个虚拟机
-async fn verify_single_vm_with_qga(
-    vm_name: &str,
-    host_name: &str,
-    host_ip: &str,
-    max_retries: u32,
-    retry_delay_secs: u64,
-) -> Result<()> {
-    use atp_protocol::qga::QgaProtocol;
-    use atp_protocol::Protocol;
-    use virt::domain::Domain;
-
-    info!("验证虚拟机 {} (主机: {})", vm_name, host_name);
-
-    // 连接 libvirt
-    let conn_result = connect_libvirt(host_name, host_ip)
-        .await
-        .context(format!("无法连接主机 {} ({})", host_name, host_ip))?;
-
-    // 获取 domain
-    let domain = {
-        let conn_mutex = conn_result
-            .connection
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("获取连接失败: {}", e))?;
-        let conn_guard = conn_mutex.lock().await;
-        let conn_ref = conn_guard
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("连接不可用"))?;
-
-        Domain::lookup_by_name(conn_ref, vm_name)
-            .map_err(|e| anyhow::anyhow!("找不到虚拟机 {}: {}", vm_name, e))?
-    };
-
-    // 重试 QGA ping
-    for attempt in 1..=max_retries {
-        info!("QGA ping 尝试 {}/{} - {}", attempt, max_retries, vm_name);
-
-        let mut qga = QgaProtocol::new().with_timeout(10);
-        match qga.connect(&domain).await {
-            Ok(()) => {
-                // connect 成功意味着 ping 也成功了 (connect 内部会调用 ping)
-                info!("✅ {} - QGA 验证成功", vm_name);
-                return Ok(());
-            }
-            Err(e) => {
-                warn!(
-                    "⚠️  {} - QGA 连接失败 (尝试 {}/{}): {}",
-                    vm_name, attempt, max_retries, e
-                );
-                if attempt < max_retries {
-                    info!("等待 {} 秒后重试...", retry_delay_secs);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay_secs)).await;
-                }
-            }
-        }
-    }
-
-    bail!("QGA 验证失败 (已重试 {} 次)", max_retries)
 }
 
 /// 批量分配虚拟机给用户
@@ -1347,21 +859,20 @@ async fn batch_assign_vms(
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
 
     // 登录 VDI
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
     println!("✅ VDI 登录成功\n");
 
-    // 获取主机映射
-    let hosts = client.host().list_all().await?;
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
+    use atp_executor::{BatchOperations, VdiBatchOps};
+    let transport_manager = Arc::new(TransportManager::default());
+    let batch_ops = VdiBatchOps::new(transport_manager, client.clone());
 
     // 获取匹配的虚拟机
     println!("🔍 匹配模式: {}\n", pattern);
-    let all_vms = get_matching_vms(&client, pattern, &host_id_to_name).await?;
+    let all_vms = batch_ops.get_matching_vms(pattern).await?;
 
     // 分离已分配和未分配的虚拟机
-    let (assigned_vms, unassigned_vms): (Vec<_>, Vec<_>) = all_vms
-        .iter()
-        .partition(|vm| vm.bound_user.is_some());
+    let (assigned_vms, unassigned_vms): (Vec<_>, Vec<_>) =
+        all_vms.iter().partition(|vm| vm.bound_user.is_some());
 
     // 收集已有虚拟机的用户 ID
     let users_with_vms: std::collections::HashSet<_> = assigned_vms
@@ -1375,11 +886,17 @@ async fn batch_assign_vms(
         (unassigned_vms.iter().cloned().collect(), false)
     } else if force {
         // 强制模式：使用所有匹配的虚拟机，不跳过用户
-        println!("⚠️  强制模式: 将覆盖 {} 个已绑定虚拟机的用户\n", assigned_vms.len());
+        println!(
+            "⚠️  强制模式: 将覆盖 {} 个已绑定虚拟机的用户\n",
+            assigned_vms.len()
+        );
         (all_vms.iter().collect(), false)
     } else if dry_run {
         // 预览模式且有已分配虚拟机：显示全部信息但只处理未分配的
-        println!("⚠️  发现 {} 个虚拟机已有绑定用户 (预览模式下跳过):\n", assigned_vms.len());
+        println!(
+            "⚠️  发现 {} 个虚拟机已有绑定用户 (预览模式下跳过):\n",
+            assigned_vms.len()
+        );
         for vm in &assigned_vms {
             println!("  - {} -> {}", vm.name, vm.bound_user.as_ref().unwrap());
         }
@@ -1471,13 +988,20 @@ async fn batch_assign_vms(
     }
 
     // 统计
-    let reassign_count = vms_to_assign.iter().filter(|vm| vm.bound_user.is_some()).count();
+    let reassign_count = vms_to_assign
+        .iter()
+        .filter(|vm| vm.bound_user.is_some())
+        .count();
     let new_assign_count = vms_to_assign.len() - reassign_count;
 
     println!("👥 找到 {} 个目标用户", target_users.len());
     if reassign_count > 0 {
-        println!("💻 找到 {} 个虚拟机 ({} 新分配, {} 重新分配)\n",
-            vms_to_assign.len(), new_assign_count, reassign_count);
+        println!(
+            "💻 找到 {} 个虚拟机 ({} 新分配, {} 重新分配)\n",
+            vms_to_assign.len(),
+            new_assign_count,
+            reassign_count
+        );
     } else {
         println!("💻 找到 {} 个未分配虚拟机\n", vms_to_assign.len());
     }
@@ -1517,7 +1041,11 @@ async fn batch_assign_vms(
             println!("{:<30} {:<20} {:<12}", "虚拟机", "分配给用户", "状态");
             println!("{}", "-".repeat(65));
             for plan in &assignment_plans {
-                let status = if plan.is_reassignment { "重新分配" } else { "新分配" };
+                let status = if plan.is_reassignment {
+                    "重新分配"
+                } else {
+                    "新分配"
+                };
                 println!("{:<30} {:<20} {:<12}", plan.vm_name, plan.username, status);
             }
         }
@@ -1540,39 +1068,20 @@ async fn batch_assign_vms(
         return Ok(());
     }
 
-    // 执行分配
+    // 执行分配 - 使用核心模块
     println!("\n🔗 正在分配虚拟机...");
-    let mut success_count = 0;
-    let mut error_count = 0;
-
-    for plan in &assignment_plans {
-        // 如果是重新分配，先解绑现有用户
-        if plan.is_reassignment {
-            if let Err(e) = client.domain().unbind_user(&plan.vm_id).await {
-                error!("❌ 解绑失败 {}: {}", plan.vm_name, e);
-                error_count += 1;
-                continue;
-            }
-        }
-
-        // 绑定新用户
-        match client.domain().bind_user(&plan.vm_id, &plan.username).await {
-            Ok(_) => {
-                let action = if plan.is_reassignment { "重新分配" } else { "分配" };
-                info!("✅ {} {} -> {}", action, plan.vm_name, plan.username);
-                success_count += 1;
-            }
-            Err(e) => {
-                error!("❌ {} -> {}: {}", plan.vm_name, plan.username, e);
-                error_count += 1;
-            }
-        }
-    }
+    let result = batch_ops.batch_assign(&assignment_plans).await?;
 
     println!(
         "\n📊 分配结果: 成功 {}, 失败 {}",
-        success_count, error_count
+        result.success_count, result.error_count
     );
+
+    if !result.errors.is_empty() {
+        for err in &result.errors {
+            error!("❌ {} -> {}", err.vm_name, err.error);
+        }
+    }
 
     Ok(())
 }
@@ -1593,16 +1102,16 @@ async fn batch_rename_vms(
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
 
     // 登录 VDI
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
     println!("✅ VDI 登录成功\n");
 
-    // 获取主机映射
-    let hosts = client.host().list_all().await?;
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
+    use atp_executor::{BatchOperations, VdiBatchOps};
+    let transport_manager = Arc::new(TransportManager::default());
+    let batch_ops = VdiBatchOps::new(transport_manager, client.clone());
 
     // 获取匹配的虚拟机
     println!("🔍 匹配模式: {}\n", pattern);
-    let all_vms = get_matching_vms(&client, pattern, &host_id_to_name).await?;
+    let all_vms = batch_ops.get_matching_vms(pattern).await?;
 
     // 过滤：已绑定用户且名称不同
     let rename_plans: Vec<RenamePlan> = all_vms
@@ -1659,34 +1168,26 @@ async fn batch_rename_vms(
         return Ok(());
     }
 
-    // 执行重命名
+    // 执行重命名 - 使用核心模块
     println!("\n📝 正在重命名虚拟机...");
-    let mut success_count = 0;
-    let mut error_count = 0;
-
-    for plan in &rename_plans {
-        match client.domain().rename(&plan.vm_id, &plan.new_name).await {
-            Ok(_) => {
-                info!("✅ {} -> {}", plan.old_name, plan.new_name);
-                success_count += 1;
-            }
-            Err(e) => {
-                error!("❌ {} -> {}: {}", plan.old_name, plan.new_name, e);
-                error_count += 1;
-            }
-        }
-    }
+    let result = batch_ops.batch_rename(&rename_plans).await?;
 
     println!(
         "\n📊 重命名结果: 成功 {}, 失败 {}",
-        success_count, error_count
+        result.success_count, result.error_count
     );
+
+    if !result.errors.is_empty() {
+        for err in &result.errors {
+            error!("❌ {} -> {}", err.vm_name, err.error);
+        }
+    }
 
     Ok(())
 }
 
-/// 批量设置 autoJoinDomain
-async fn batch_set_auto_join_domain(
+/// 批量设置自动加域 (autoJoinDomain)
+async fn batch_set_auto_ad(
     config_path: &str,
     pattern: &str,
     enable: bool,
@@ -1702,7 +1203,6 @@ async fn batch_set_auto_join_domain(
         bail!("必须指定 --enable 或 --disable 参数");
     }
 
-    let target_value = if enable { 1 } else { 0 };
     let action_name = if enable { "启用" } else { "禁用" };
 
     // 加载配置
@@ -1710,18 +1210,17 @@ async fn batch_set_auto_join_domain(
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
 
     // 登录 VDI
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
     println!("✅ VDI 登录成功\n");
 
-    // 获取主机映射
-    let hosts = client.host().list_all().await?;
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts);
+    let transport_manager = Arc::new(TransportManager::default());
+    let batch_ops = VdiBatchOps::new(transport_manager, client.clone());
 
     // 获取匹配的虚拟机
     println!("🔍 匹配模式: {}", pattern);
     println!("🎯 操作: {} 自动加域\n", action_name);
 
-    let all_vms = get_matching_vms(&client, pattern, &host_id_to_name).await?;
+    let all_vms = batch_ops.get_matching_vms(pattern).await?;
 
     if all_vms.is_empty() {
         println!("⚠️  没有找到匹配的虚拟机");
@@ -1760,32 +1259,20 @@ async fn batch_set_auto_join_domain(
         return Ok(());
     }
 
-    // 执行设置
+    // 执行设置 - 使用核心模块
     println!("\n⚙️  正在设置 autoJoinDomain...");
-    let mut success_count = 0;
-    let mut error_count = 0;
-
-    for vm in &all_vms {
-        match client
-            .domain()
-            .set_auto_join_domain(&vm.id, target_value)
-            .await
-        {
-            Ok(_) => {
-                info!("✅ {} - {} 自动加域", vm.name, action_name);
-                success_count += 1;
-            }
-            Err(e) => {
-                error!("❌ {} - {} 失败: {}", vm.name, action_name, e);
-                error_count += 1;
-            }
-        }
-    }
+    let result = batch_ops.batch_set_auto_ad(&all_vms, enable).await?;
 
     println!(
         "\n📊 设置结果: 成功 {}, 失败 {}",
-        success_count, error_count
+        result.success_count, result.error_count
     );
+
+    if !result.errors.is_empty() {
+        for err in &result.errors {
+            error!("❌ {} - {} 失败: {}", err.vm_name, action_name, err.error);
+        }
+    }
 
     Ok(())
 }
@@ -1794,28 +1281,9 @@ async fn batch_set_auto_join_domain(
 // Gluster 脑裂修复
 // ============================================
 
-/// 脑裂修复上下文
-struct HealContext {
-    volume_name: String,
-    storage_pool_id: String,
-    host_clients: HashMap<String, GlusterClient>,
-    dry_run: bool,
-    auto_mode: bool,
-}
-
-/// 受影响的 VM 信息
-#[derive(Debug, Clone)]
-struct AffectedVm {
-    id: String,
-    name: String,
-    status: String,
-    status_code: i64,
-    host_id: String,
-    host_name: String,
-    disk_name: String,
-}
-
 /// Gluster 存储脑裂修复
+///
+/// 核心业务逻辑委托给 `StorageOpsService`，CLI 仅负责参数解析、存储池选择和输出格式化。
 #[allow(clippy::too_many_arguments)]
 async fn heal_splitbrain(
     config_path: &str,
@@ -1846,7 +1314,7 @@ async fn heal_splitbrain(
 
     // 1. 登录 VDI 平台
     println!("📋 步骤 1/2: 连接 VDI 平台和存储池...");
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
     println!("   ✅ VDI 登录成功");
 
     // 确定存储池 ID（交互式选择或使用指定的）
@@ -1856,482 +1324,257 @@ async fn heal_splitbrain(
             // 获取所有存储池并筛选 Gluster 类型
             println!("\n📋 获取存储池列表...");
             let all_pools = client.storage().list_all_pools().await?;
-            
-            // 筛选 Gluster 类型的存储池 (API 可能返回 type 或 poolType)
+
+            // 筛选 Gluster 类型的存储池
             let gluster_pools: Vec<_> = all_pools
                 .iter()
                 .filter(|p| {
-                    let pool_type = p["type"].as_str()
+                    let pool_type = p["type"]
+                        .as_str()
                         .or_else(|| p["poolType"].as_str())
                         .unwrap_or("");
                     pool_type == "gluster"
                 })
                 .collect();
-            
+
             if gluster_pools.is_empty() {
-                // 显示所有存储池及其类型以便调试
                 println!("\n   ⚠️  未找到 Gluster 存储池，当前所有存储池：");
                 for pool in &all_pools {
                     let name = pool["name"].as_str().unwrap_or("未知");
-                    let t = pool["type"].as_str()
+                    let t = pool["type"]
+                        .as_str()
                         .or_else(|| pool["poolType"].as_str())
                         .unwrap_or("未知");
                     println!("      - {} (类型: {})", name, t);
                 }
                 bail!("未找到 Gluster 类型的存储池");
             }
-            
+
             println!("\n   发现 {} 个 Gluster 存储池：\n", gluster_pools.len());
             println!("   {:<4} {:<40} {:<30}", "序号", "存储池 ID", "名称");
             println!("   {}", "-".repeat(75));
-            
+
             for (i, pool) in gluster_pools.iter().enumerate() {
                 let pool_name = pool["name"].as_str().unwrap_or("未知");
                 let id = pool["id"].as_str().unwrap_or("未知");
                 println!("   {:<4} {:<40} {:<30}", i + 1, id, pool_name);
             }
-            
+
             println!();
-            print!("   请选择要修复的存储池 (输入序号 1-{}): ", gluster_pools.len());
+            print!(
+                "   请选择要修复的存储池 (输入序号 1-{}): ",
+                gluster_pools.len()
+            );
             io::stdout().flush()?;
-            
+
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
-            
+
             let choice: usize = input.trim().parse().context("请输入有效的数字")?;
-            
+
             if choice == 0 || choice > gluster_pools.len() {
                 bail!("无效的选择: {}", choice);
             }
-            
+
             let selected = &gluster_pools[choice - 1];
-            selected["id"].as_str().context("无法获取存储池 ID")?.to_string()
+            selected["id"]
+                .as_str()
+                .context("无法获取存储池 ID")?
+                .to_string()
         }
     };
 
-    // 查询存储池详情
+    // 验证存储池类型
     let pool_detail = client.storage().get_pool(&selected_pool_id).await?;
     let data = &pool_detail["data"];
-
-    // API 可能返回 type 或 poolType
-    let pool_type = data["type"].as_str()
+    let pool_type = data["type"]
+        .as_str()
         .or_else(|| data["poolType"].as_str())
         .unwrap_or("");
     if pool_type != "gluster" {
-        bail!("存储池 {} 不是 Gluster 类型 (类型: {})", selected_pool_id, pool_type);
+        bail!(
+            "存储池 {} 不是 Gluster 类型 (类型: {})",
+            selected_pool_id,
+            pool_type
+        );
     }
 
-    // 实际的 Gluster 卷名在 sourceName 字段中
     let volume_name = data["sourceName"]
         .as_str()
         .or_else(|| data["volumeName"].as_str())
         .or_else(|| data["volName"].as_str())
-        .context("无法获取 Gluster 卷名")?
-        .to_string();
+        .context("无法获取 Gluster 卷名")?;
 
-    let resource_pool_id = data["poolId"].as_str().unwrap_or("").to_string();
+    println!(
+        "   ✅ 存储池: {} (Gluster 卷: {})\n",
+        selected_pool_id, volume_name
+    );
 
-    println!("   ✅ 存储池: {} (Gluster 卷: {})", selected_pool_id, volume_name);
+    // 2. 创建存储操作服务
+    let storage = match StorageManager::new("~/.config/atp/data.db").await {
+        Ok(manager) => Some(Arc::new(Storage::from_manager(&manager))),
+        Err(_) => None,
+    };
 
-    // 获取关联主机
-    let hosts = if resource_pool_id.is_empty() {
-        client.host().list_all().await?
+    let mut ssh_manager = SshConnectionManager::new(ssh_user);
+    if let Some(s) = storage {
+        ssh_manager = ssh_manager.with_storage(s);
+    }
+
+    let mut service = StorageOpsService::new(Arc::clone(&client), ssh_manager);
+
+    // 构建 SSH 参数
+    let ssh_params = SshParams {
+        user: ssh_user.to_string(),
+        password: ssh_password.map(|s| s.to_string()),
+        key_path: ssh_key.map(PathBuf::from),
+    };
+
+    // 3. 确定修复策略
+    let strategy = if dry_run {
+        HealStrategy::DryRun
+    } else if auto_mode {
+        HealStrategy::Auto
     } else {
-        client.host().list_by_pool_id(&resource_pool_id).await?
+        HealStrategy::Interactive
     };
 
-    let host_ips: Vec<(String, String)> = hosts
-        .iter()
-        .filter_map(|h| {
-            let ip = h["ip"].as_str()?.to_string();
-            let name = h["name"].as_str().unwrap_or(&ip).to_string();
-            Some((ip, name))
-        })
-        .collect();
+    // 4. 执行修复
+    println!("📋 步骤 2/2: 检测并修复脑裂文件...\n");
 
-    if host_ips.is_empty() {
-        bail!("未找到关联主机");
-    }
+    let report = if auto_mode || dry_run {
+        // 自动模式或预览模式
+        service
+            .heal_splitbrain(
+                &selected_pool_id,
+                &ssh_params,
+                strategy,
+                &AutoReplicaSelector,
+            )
+            .await?
+    } else {
+        // 交互模式：使用回调函数询问用户
+        let selector = InteractiveReplicaSelector::new(
+            |entry: &SplitBrainEntry,
+             stats: &[ReplicaStat],
+             affected_vm: Option<&AffectedVm>|
+             -> Option<usize> {
+                // 输出文件信息
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("📄 文件: {} ({})", entry.path, entry.entry_type);
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("   ✅ 找到 {} 个关联主机\n", host_ips.len());
-
-    // 尝试连接到一个主机
-    let mut connected_host: Option<(String, GlusterClient)> = None;
-    let mut host_clients: HashMap<String, GlusterClient> = HashMap::new();
-
-    for (ip, name) in &host_ips {
-        info!("   尝试连接主机 {} ({})...", name, ip);
-
-        let ssh_config = if let Some(password) = ssh_password {
-            SshConfig::with_password(ip, ssh_user, password)
-        } else if let Some(key_path) = ssh_key {
-            SshConfig::with_key(ip, ssh_user, PathBuf::from(key_path))
-        } else {
-            SshConfig::with_default_key(ip, ssh_user)
-        };
-
-        match SshClient::connect(ssh_config).await {
-            Ok(ssh) => {
-                let gluster = GlusterClient::new(ssh);
-                if connected_host.is_none() {
-                    connected_host = Some((ip.clone(), GlusterClient::new(
-                        SshClient::connect(
-                            if let Some(password) = ssh_password {
-                                SshConfig::with_password(ip, ssh_user, password)
-                            } else if let Some(key_path) = ssh_key {
-                                SshConfig::with_key(ip, ssh_user, PathBuf::from(key_path))
-                            } else {
-                                SshConfig::with_default_key(ip, ssh_user)
-                            }
-                        ).await?
-                    )));
+                // 显示 VM 信息
+                if let Some(vm) = affected_vm {
+                    println!("📋 受影响的虚拟机:");
+                    println!("   ├── 名称: {} (ID: {})", vm.name, vm.id);
+                    println!("   ├── 磁盘: {}", vm.disk_name);
+                    println!("   ├── 主机: {}", vm.host_name);
+                    println!("   └── 状态: {}", vm.status);
+                } else {
+                    println!("   ⚠️  未找到对应的虚拟机，可能是孤立磁盘");
                 }
-                host_clients.insert(ip.clone(), gluster);
-                println!("   ✅ 已连接: {} ({})", name, ip);
-            }
-            Err(e) => {
-                warn!("   ⚠️  {} ({}) 连接失败: {}", name, ip, e);
-            }
-        }
-    }
 
-    let (primary_ip, primary_client) = connected_host.context("无法连接到任何主机")?;
+                // 显示副本信息
+                println!("\n📋 副本信息:");
+                for stat in stats {
+                    println!("   副本 {}: {}:{}", stat.index, stat.host, stat.full_path);
+                    if let (Some(size), Some(mtime)) = (stat.size, &stat.mtime) {
+                        let size_human = format_size(size);
+                        println!("      大小: {}, 修改时间: {}", size_human, mtime);
+                    }
+                }
 
-    // 2. 检测脑裂文件
-    println!("\n📋 步骤 2/2: 检测脑裂文件...");
-    let split_brain_info = primary_client.check_split_brain(&volume_name).await?;
+                // 询问用户选择
+                print!("\n   请选择要舍弃的副本 [1/2] (0 跳过): ");
+                if io::stdout().flush().is_err() {
+                    return None;
+                }
 
-    if !split_brain_info.has_split_brain() {
-        println!("   ✅ 未检测到脑裂文件，存储状态正常！\n");
-        return Ok(());
-    }
+                let mut input = String::new();
+                if io::stdin().read_line(&mut input).is_err() {
+                    return None;
+                }
 
-    println!(
-        "   ⚠️  发现 {} 个脑裂文件 (原始条目: {})\n",
-        split_brain_info.entry_count(),
-        split_brain_info.raw_count
-    );
+                match input.trim().parse::<usize>() {
+                    Ok(0) => None,
+                    Ok(choice) if choice >= 1 && choice <= stats.len() => Some(choice),
+                    _ => {
+                        println!("   ⚠️  无效选择，跳过此文件");
+                        None
+                    }
+                }
+            },
+        );
 
-    // 获取主机映射
-    let hosts_all = client.host().list_all().await?;
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts_all);
-    let host_id_to_ip: HashMap<String, String> = hosts_all
-        .iter()
-        .filter_map(|h| {
-            let id = h["id"].as_str()?.to_string();
-            let ip = h["ip"].as_str()?.to_string();
-            Some((id, ip))
-        })
-        .collect();
-
-    // 获取存储池下的所有存储卷
-    let volumes = client.storage().list_volumes_by_pool(&selected_pool_id).await?;
-
-    // 创建修复上下文
-    let mut ctx = HealContext {
-        volume_name: volume_name.clone(),
-        storage_pool_id: selected_pool_id.clone(),
-        host_clients,
-        dry_run,
-        auto_mode,
+        service
+            .heal_splitbrain(&selected_pool_id, &ssh_params, strategy, &selector)
+            .await?
     };
 
-    // 统计结果
-    let mut success_count = 0;
-    let mut skip_count = 0;
-    let mut fail_count = 0;
-    let total = split_brain_info.entry_count();
-
-    // 逐个处理脑裂文件
-    for (idx, entry) in split_brain_info.entries.iter().enumerate() {
-        println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        println!(
-            "📄 处理文件 {}/{}: {} ({})",
-            idx + 1,
-            total,
-            entry.path,
-            entry.entry_type
-        );
-        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-        match process_split_brain_entry(
-            &client,
-            &mut ctx,
-            entry,
-            &volumes,
-            &host_id_to_name,
-            &host_id_to_ip,
-            &primary_ip,
-            format,
-        )
-        .await
-        {
-            Ok(true) => {
-                success_count += 1;
-                println!("   ✅ 文件 {} 修复成功!", entry.path);
-            }
-            Ok(false) => {
-                skip_count += 1;
-                println!("   ⏭️  文件 {} 已跳过", entry.path);
-            }
-            Err(e) => {
-                fail_count += 1;
-                println!("   ❌ 文件 {} 修复失败: {}", entry.path, e);
-            }
-        }
-    }
-
-    // 最终统计
-    println!("\n╔════════════════════════════════════════════════════════════════╗");
-    println!("║                        修复完成                                 ║");
-    println!(
-        "║  成功: {} 个文件   跳过: {} 个   失败: {} 个                   ║",
-        success_count, skip_count, fail_count
-    );
-    if !dry_run && success_count > 0 {
-        println!("║  ⚠️  受影响的 VM 保持关机状态，请手动启动                       ║");
-    }
-    println!("╚════════════════════════════════════════════════════════════════╝\n");
+    // 5. 输出报告
+    output_heal_report(&report, format, dry_run)?;
 
     Ok(())
 }
 
-/// 处理单个脑裂条目
-#[allow(clippy::too_many_arguments)]
-async fn process_split_brain_entry(
-    client: &atp_vdiplatform::VdiClient,
-    ctx: &mut HealContext,
-    entry: &SplitBrainEntry,
-    volumes: &[serde_json::Value],
-    host_id_to_name: &HashMap<String, String>,
-    host_id_to_ip: &HashMap<String, String>,
-    primary_ip: &str,
-    _format: &str,
-) -> Result<bool> {
-    // 1. 提取文件名用于查找 VM
-    let file_path = entry.effective_path();
-    let file_name = std::path::Path::new(file_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(file_path);
+/// 格式化文件大小
+fn format_size(size: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
 
-    // 去掉文件扩展名
-    let disk_name = file_name.trim_end_matches(".qcow2").trim_end_matches(".raw");
-
-    println!("📋 识别受影响的虚拟机...");
-
-    // 2. 查找对应的 VM
-    let affected_vm = find_affected_vm(client, volumes, disk_name, host_id_to_name).await?;
-
-    match &affected_vm {
-        Some(vm) => {
-            println!("   ├── 所属 VM: {} (ID: {})", vm.name, vm.id);
-            println!("   ├── 磁盘名: {}", vm.disk_name);
-            println!("   ├── 所在主机: {}", vm.host_name);
-            println!("   └── 当前状态: {}", vm.status);
-        }
-        None => {
-            println!("   ⚠️  未找到对应的虚拟机，可能是孤立磁盘");
-        }
-    }
-
-    // 3. 如果 VM 正在运行，需要关闭
-    if let Some(ref vm) = affected_vm {
-        if vm.status_code == 1 {
-            // Running
-            println!("\n📋 关闭虚拟机...");
-            if ctx.dry_run {
-                println!("   📝 [预览模式] 将强制关闭 VM: {}", vm.name);
-            } else {
-                println!("   ⚠️  正在强制关闭 {}...", vm.name);
-                client
-                    .domain()
-                    .batch_force_shutdown(vec![vm.id.clone()])
-                    .await
-                    .context("强制关闭 VM 失败")?;
-
-                // 等待关机
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                println!("   ✅ 已关闭");
-            }
-        }
-    }
-
-    // 4. 显示副本信息
-    println!("\n📋 副本信息对比...");
-
-    if entry.brick_locations.len() < 2 {
-        println!("   ⚠️  副本数量不足，无法进行脑裂修复");
-        return Ok(false);
-    }
-
-    // 获取每个副本的文件统计信息
-    let mut replica_stats = Vec::new();
-    for (i, loc) in entry.brick_locations.iter().enumerate() {
-        let host_ip = &loc.host;
-
-        // 尝试获取文件统计信息
-        if let Some(gluster_client) = ctx.host_clients.get(host_ip) {
-            match gluster_client.get_file_stat(&loc.full_path).await {
-                Ok(stat) => {
-                    println!("   ┌─────────────────────────────────────────────────────────────────┐");
-                    println!("   │ 副本 {}: {}:{}", i + 1, loc.host, loc.full_path);
-                    println!("   │   大小: {}", stat.size_human());
-                    println!("   │   修改时间: {}", stat.mtime);
-                    println!("   └─────────────────────────────────────────────────────────────────┘");
-                    replica_stats.push((i + 1, loc.clone(), Some(stat)));
-                }
-                Err(e) => {
-                    println!("   副本 {}: {}:{} - 无法获取信息: {}", i + 1, loc.host, loc.full_path, e);
-                    replica_stats.push((i + 1, loc.clone(), None));
-                }
-            }
-        } else {
-            println!("   副本 {}: {}:{} - 未连接到主机", i + 1, loc.host, loc.full_path);
-            replica_stats.push((i + 1, loc.clone(), None));
-        }
-    }
-
-    // 显示参考信息
-    if let Some(ref vm) = affected_vm {
-        if let Some(ip) = host_id_to_ip.get(&vm.host_id) {
-            println!("\n   💡 参考信息: VM 上次运行在 {} ({})", vm.host_name, ip);
-        }
-    }
-
-    // 5. 让用户选择舍弃哪个副本
-    let discard_idx = if ctx.auto_mode {
-        // 自动模式：选择不是 VM 上次运行主机的副本
-        let vm_host_ip = affected_vm
-            .as_ref()
-            .and_then(|vm| host_id_to_ip.get(&vm.host_id));
-
-        let auto_choice = replica_stats
-            .iter()
-            .find(|(_, loc, _)| vm_host_ip.map_or(true, |ip| &loc.host != ip))
-            .map(|(idx, _, _)| *idx)
-            .unwrap_or(2); // 默认舍弃第二个
-
-        println!("\n   🤖 自动选择: 舍弃副本 {}", auto_choice);
-        auto_choice
-    } else if ctx.dry_run {
-        println!("\n   📝 [预览模式] 需要用户选择舍弃哪个副本");
-        return Ok(false);
+    if size >= GB {
+        format!("{:.2} GB", size as f64 / GB as f64)
+    } else if size >= MB {
+        format!("{:.2} MB", size as f64 / MB as f64)
+    } else if size >= KB {
+        format!("{:.2} KB", size as f64 / KB as f64)
     } else {
-        // 交互模式
-        print!("\n   请选择要舍弃的副本 [1/2]: ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let choice = input.trim().parse::<usize>().unwrap_or(0);
-
-        if choice < 1 || choice > replica_stats.len() {
-            println!("   ⚠️  无效选择，跳过此文件");
-            return Ok(false);
-        }
-        choice
-    };
-
-    // 获取要舍弃的副本信息
-    let discard_replica = replica_stats
-        .iter()
-        .find(|(idx, _, _)| *idx == discard_idx)
-        .map(|(_, loc, _)| loc.clone())
-        .context("找不到选择的副本")?;
-
-    if ctx.dry_run {
-        println!("\n   📝 [预览模式] 将在 {} 上清除 AFR 属性", discard_replica.host);
-        return Ok(false);
-    }
-
-    // 6. 执行修复
-    println!("\n📋 执行修复...");
-
-    let gluster_client = ctx
-        .host_clients
-        .get(&discard_replica.host)
-        .context(format!("未连接到主机 {}", discard_replica.host))?;
-
-    // 清除 AFR 属性
-    let removed_count = gluster_client
-        .remove_all_afr_attributes(&discard_replica.full_path)
-        .await
-        .context("清除 AFR 属性失败")?;
-
-    println!("   ✅ 已清除 {} 上的 {} 个 AFR 属性", discard_replica.host, removed_count);
-
-    // 获取主客户端触发修复
-    let any_client = ctx.host_clients.values().next().context("无可用客户端")?;
-    any_client
-        .trigger_heal(&ctx.volume_name)
-        .await
-        .context("触发卷修复失败")?;
-    println!("   ✅ 已触发卷修复");
-
-    // 7. 等待修复完成
-    println!("\n📋 验证修复结果...");
-
-    let healed = any_client
-        .wait_for_heal(&ctx.volume_name, 10, 5)
-        .await
-        .context("等待修复完成失败")?;
-
-    if healed {
-        Ok(true)
-    } else {
-        println!("   ⚠️  修复可能仍在进行中，请稍后检查");
-        Ok(true) // 仍然认为成功，因为操作已执行
+        format!("{} B", size)
     }
 }
 
-/// 查找受影响的 VM
-async fn find_affected_vm(
-    client: &atp_vdiplatform::VdiClient,
-    volumes: &[serde_json::Value],
-    disk_name: &str,
-    host_id_to_name: &HashMap<String, String>,
-) -> Result<Option<AffectedVm>> {
-    // 在存储卷中查找匹配的磁盘
-    for vol in volumes {
-        let vol_name = vol["name"].as_str().unwrap_or("");
-
-        // 检查是否匹配
-        if vol_name == disk_name || vol_name.contains(disk_name) || disk_name.contains(vol_name) {
-            let domain_id = vol["domainId"].as_str().unwrap_or("");
-            let domain_name = vol["domainName"].as_str().unwrap_or("");
-
-            if domain_id.is_empty() {
-                continue;
+/// 输出脑裂修复报告
+fn output_heal_report(report: &HealReport, format: &str, dry_run: bool) -> Result<()> {
+    match format {
+        "json" => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        _ => {
+            println!("\n╔════════════════════════════════════════════════════════════════╗");
+            println!("║                        修复完成                                 ║");
+            println!(
+                "║  成功: {} 个文件   跳过: {} 个   失败: {} 个                   ║",
+                report.success_count, report.skip_count, report.fail_count
+            );
+            if !dry_run && report.success_count > 0 {
+                println!("║  ⚠️  受影响的 VM 保持关机状态，请手动启动                       ║");
             }
+            println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-            // 获取 VM 详情
-            let all_vms = client.domain().list_all().await?;
-            let vm = all_vms
-                .iter()
-                .find(|v| v["id"].as_str() == Some(domain_id));
-
-            if let Some(vm) = vm {
-                let host_id = vm["hostId"].as_str().unwrap_or("").to_string();
-                let host_name = host_id_to_name
-                    .get(&host_id)
-                    .cloned()
-                    .unwrap_or_else(|| host_id.clone());
-
-                return Ok(Some(AffectedVm {
-                    id: domain_id.to_string(),
-                    name: domain_name.to_string(),
-                    status: DomainStatus::from_code(vm["status"].as_i64().unwrap_or(-1))
-                        .display_name()
-                        .to_string(),
-                    status_code: vm["status"].as_i64().unwrap_or(-1),
-                    host_id,
-                    host_name,
-                    disk_name: vol_name.to_string(),
-                }));
+            // 输出详细结果
+            if !report.results.is_empty() {
+                println!("详细结果:");
+                for result in &report.results {
+                    match result {
+                        atp_executor::HealEntryResult::Success {
+                            path,
+                            discarded_replica,
+                        } => {
+                            println!("   ✅ {} - 舍弃副本: {}", path, discarded_replica);
+                        }
+                        atp_executor::HealEntryResult::Skipped { path, reason } => {
+                            println!("   ⏭️  {} - {}", path, reason);
+                        }
+                        atp_executor::HealEntryResult::Failed { path, error } => {
+                            println!("   ❌ {} - {}", path, error);
+                        }
+                    }
+                }
             }
         }
     }
 
-    Ok(None)
+    Ok(())
 }
