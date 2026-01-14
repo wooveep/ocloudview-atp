@@ -90,4 +90,9 @@ impl Storage {
     pub fn storage_volumes(&self) -> &StorageVolumeRepository {
         &self.storage_volumes
     }
+
+    /// 获取数据库连接池
+    pub fn pool(&self) -> &SqlitePool {
+        &self._pool
+    }
 }

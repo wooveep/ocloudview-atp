@@ -384,174 +384,48 @@ impl ScenarioRunner {
 
     /// 获取可用虚拟机列表
     ///
-    /// 优先从 VDI 平台获取虚拟机列表，并保存虚拟机-主机映射到数据库
+    /// 优先从 VDI 平台获取虚拟机列表，并通过 VdiCacheManager 同步到本地数据库
     async fn list_available_domains(&mut self, scenario: &Scenario) -> Result<Vec<String>> {
         // 优先使用 VDI 平台获取虚拟机列表
         if let Some(vdi_client) = &self.vdi_client {
             info!("从 VDI 平台获取虚拟机列表");
 
-            // 获取虚拟机列表（包含主机信息）
-            let domains = vdi_client.domain().list_running().await.map_err(|e| {
-                ExecutorError::TransportError(format!("VDI 获取虚拟机列表失败: {}", e))
-            })?;
-
-            // 获取主机列表
+            // 获取主机列表并同步到本地数据库
             let hosts = vdi_client.host().list_all().await.map_err(|e| {
                 ExecutorError::TransportError(format!("VDI 获取主机列表失败: {}", e))
             })?;
 
-            // 构建 host_id -> host_info 映射
-            let host_map: std::collections::HashMap<String, &serde_json::Value> = hosts
+            // 获取虚拟机列表（包含主机信息）
+            let domains = vdi_client.domain().list_all().await.map_err(|e| {
+                ExecutorError::TransportError(format!("VDI 获取虚拟机列表失败: {}", e))
+            })?;
+
+            // 使用 VdiCacheManager 同步数据到本地数据库
+            if let Some(storage) = &self.storage {
+                let cache = atp_storage::VdiCacheManager::from_pool(storage.pool().clone());
+
+                // 先同步主机（满足外键约束）
+                match cache.sync_hosts(&hosts).await {
+                    Ok(count) => debug!("同步了 {} 个主机记录到数据库", count),
+                    Err(e) => warn!("同步主机记录失败: {}", e),
+                }
+
+                // 同步虚拟机
+                match cache.sync_domains(&domains).await {
+                    Ok(count) => info!("同步了 {} 个虚拟机记录到数据库", count),
+                    Err(e) => warn!("同步虚拟机记录失败: {}", e),
+                }
+            }
+
+            // 提取虚拟机名称列表（只返回运行中的虚拟机）
+            let domain_names: Vec<String> = domains
                 .iter()
-                .filter_map(|h| h["id"].as_str().map(|id| (id.to_string(), h)))
+                .filter(|d| {
+                    // status == 1 表示运行中
+                    d["status"].as_i64().map(|s| s == 1).unwrap_or(false)
+                })
+                .filter_map(|d| d["name"].as_str().map(|s| s.to_string()))
                 .collect();
-
-            // 先保存主机记录到数据库（满足外键约束）
-            if let Some(storage) = &self.storage {
-                let now = chrono::Utc::now();
-                for host_info in &hosts {
-                    if let Some(host_id) = host_info["id"].as_str() {
-                        let host_ip = host_info["ip"].as_str().unwrap_or("");
-                        let host_name = host_info["name"].as_str().unwrap_or(host_ip);
-                        let uri = format!("qemu+tcp://{}/system", host_ip);
-
-                        let host_record = atp_storage::HostRecord {
-                            id: host_id.to_string(),
-                            host: host_name.to_string(),
-                            uri,
-                            tags: None,
-                            metadata: None,
-                            ssh_username: None,
-                            ssh_password: None,
-                            ssh_port: None,
-                            ssh_key_path: None,
-                            created_at: now,
-                            updated_at: now,
-                            // VDI 扩展字段
-                            ip_v6: None,
-                            status: None,
-                            pool_id: None,
-                            vmc_id: None,
-                            manufacturer: None,
-                            model: None,
-                            cpu: None,
-                            cpu_size: None,
-                            memory: None,
-                            physical_memory: None,
-                            domain_limit: None,
-                            extranet_ip: None,
-                            extranet_ip_v6: None,
-                            arch: None,
-                            domain_cap_xml: None,
-                            qemu_version: None,
-                            libvirt_version: None,
-                            cached_at: Some(now),
-                        };
-
-                        if let Err(e) = storage.hosts().upsert(&host_record).await {
-                            warn!("保存主机记录失败: {} - {}", host_id, e);
-                        }
-                    }
-                }
-                debug!("保存了 {} 个主机记录到数据库", hosts.len());
-            }
-
-            let mut domain_names = Vec::new();
-            let mut domain_records = Vec::new();
-
-            for domain in &domains {
-                if let Some(name) = domain["name"].as_str() {
-                    domain_names.push(name.to_string());
-
-                    // 提取主机信息
-                    if let Some(host_id) = domain["hostId"].as_str() {
-                        if let Some(host_info) = host_map.get(host_id) {
-                            let host_ip = host_info["ip"].as_str().unwrap_or("");
-                            let host_name = host_info["name"].as_str();
-                            // 从 VDI 平台获取操作系统类型
-                            let os_type = domain["osType"].as_str();
-
-                            // 构建简化的 DomainRecord 用于保存到数据库
-                            let domain_record = atp_storage::DomainRecord {
-                                id: domain["id"].as_str().unwrap_or(name).to_string(),
-                                name: Some(name.to_string()),
-                                host_id: Some(host_id.to_string()),
-                                os_type: os_type.map(|s| s.to_string()),
-                                status: domain["status"].as_i64().map(|v| v as i32),
-                                // 其余字段使用 None
-                                is_model: None,
-                                is_connected: None,
-                                vmc_id: None,
-                                pool_id: None,
-                                last_successful_host_id: None,
-                                cpu: None,
-                                memory: None,
-                                iso_path: None,
-                                is_clone_domain: None,
-                                clone_type: None,
-                                mother_id: None,
-                                snapshot_count: None,
-                                freeze: None,
-                                last_freeze_time: None,
-                                command: None,
-                                os_name: None,
-                                os_edition: None,
-                                system_type: None,
-                                mainboard: None,
-                                bootloader: None,
-                                working_group: None,
-                                desktop_pool_id: None,
-                                user_id: None,
-                                remark: None,
-                                connect_time: None,
-                                disconnect_time: None,
-                                soundcard_type: None,
-                                domain_xml: None,
-                                affinity_ip: None,
-                                sockets: None,
-                                cores: None,
-                                threads: None,
-                                original_ip: None,
-                                original_mac: None,
-                                is_recycle: None,
-                                disable_alpha: None,
-                                graphics_card_num: None,
-                                independ_disk_cnt: None,
-                                mouse_mode: None,
-                                domain_fake: None,
-                                host_bios_enable: None,
-                                host_model_enable: None,
-                                nested_virtual: None,
-                                admin_id: None,
-                                admin_name: None,
-                                allow_monitor: None,
-                                agent_version: None,
-                                gpu_type: None,
-                                auto_join_domain: None,
-                                vgpu_type: None,
-                                keyboard_bus: None,
-                                mouse_bus: None,
-                                keep_alive: None,
-                                create_time: None,
-                                update_time: Some(chrono::Utc::now()),
-                                cached_at: Some(chrono::Utc::now()),
-                            };
-                            domain_records.push(domain_record);
-                        }
-                    }
-                }
-            }
-
-            // 保存虚拟机记录到数据库
-            if let Some(storage) = &self.storage {
-                if !domain_records.is_empty() {
-                    if let Err(e) = storage.domains().upsert_batch(&domain_records).await {
-                        warn!("保存虚拟机记录失败: {}", e);
-                    } else {
-                        info!("保存了 {} 个虚拟机记录到数据库", domain_records.len());
-                    }
-                }
-            }
 
             info!("从 VDI 平台获取到 {} 个运行中的虚拟机", domain_names.len());
             return Ok(domain_names);
@@ -619,20 +493,17 @@ impl ScenarioRunner {
             host.clone()
         } else if let Some(storage) = &self.storage {
             // 从数据库读取虚拟机记录
-            match storage
-                .domains()
-                .get_by_name(domain_name)
-                .await
-            {
+            match storage.domains().get_by_name(domain_name).await {
                 Ok(Some(domain_record)) => {
                     let host_id = domain_record.host_id.clone().unwrap_or_default();
                     // 获取主机 IP (从 hosts 表)
-                    let host_ip = if let Ok(Some(host_record)) = storage.hosts().get_by_id(&host_id).await {
-                        host_record.host.clone()
-                    } else {
-                        host_id.clone() // 回退到使用 host_id
-                    };
-                    
+                    let host_ip =
+                        if let Ok(Some(host_record)) = storage.hosts().get_by_id(&host_id).await {
+                            host_record.host.clone()
+                        } else {
+                            host_id.clone() // 回退到使用 host_id
+                        };
+
                     info!(
                         "从数据库获取虚拟机 {} 的主机信息: {} ({})",
                         domain_name, host_id, host_ip
@@ -876,11 +747,7 @@ impl ScenarioRunner {
 
         // 1. 从数据库获取 Guest OS 类型（由 VDI 平台提供）
         let os_type = if let Some(storage) = &self.storage {
-            match storage
-                .domains()
-                .get_by_name(target_domain)
-                .await
-            {
+            match storage.domains().get_by_name(target_domain).await {
                 Ok(Some(domain_record)) => {
                     let os = Self::normalize_os_type(domain_record.os_type.as_deref());
                     info!("从数据库获取 Guest OS 类型: {} -> {}", target_domain, os);
@@ -1780,6 +1647,8 @@ impl ScenarioRunner {
         timeout_secs: Option<u64>,
         index: usize,
     ) -> Result<StepReport> {
+        use crate::vdi_ops::get_domain_libvirt_state;
+
         info!("验证虚拟机状态: {} 应为 {}", domain_id, expected_status);
 
         let timeout_duration = timeout_secs
@@ -1793,22 +1662,13 @@ impl ScenarioRunner {
             .ok_or_else(|| ExecutorError::ConfigError("无可用主机".to_string()))?
             .clone();
 
-        // 通过 libvirt 查询虚拟机状态
+        // 使用共享函数获取 libvirt 虚拟机状态
         let result = timeout(timeout_duration, async {
-            let domain = self
-                .transport_manager
-                .execute_on_host(
-                    &host_id,
-                    |conn| async move { conn.get_domain(domain_id).await },
-                )
+            let state = get_domain_libvirt_state(&self.transport_manager, &host_id, domain_id)
                 .await
                 .map_err(|e| ExecutorError::TransportError(e.to_string()))?;
 
-            let state = domain
-                .get_state()
-                .map_err(|e| ExecutorError::TransportError(e.to_string()))?;
-
-            let actual_status = format!("{:?}", state.0).to_lowercase();
+            let actual_status = state.state.to_lowercase();
             let expected_lower = expected_status.to_lowercase();
 
             if actual_status.contains(&expected_lower) || expected_lower.contains(&actual_status) {

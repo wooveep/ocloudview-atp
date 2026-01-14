@@ -50,9 +50,32 @@ impl<'a> HostApi<'a> {
             .clone())
     }
 
-    /// 查询所有主机(自动处理分页)
+    /// 查询所有主机
     pub async fn list_all(&self) -> Result<Vec<serde_json::Value>> {
-        self.list_paged(1, 1000).await
+        info!("查询所有主机");
+
+        let url = "/ocloud/v1/host/all";
+        let token = self.client.get_token().await?;
+
+        let response: serde_json::Value = self.client.http_client()
+            .get(&format!("{}{}", self.client.base_url(), url))
+            .header("Token", &token)
+            .send()
+            .await
+            .map_err(|e| crate::error::VdiError::HttpError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| crate::error::VdiError::ParseError(e.to_string()))?;
+
+        if response["status"].as_i64().unwrap_or(-1) != 0 {
+            let msg = response["msg"].as_str().unwrap_or("未知错误");
+            return Err(crate::error::VdiError::ApiError(500, msg.to_string()));
+        }
+
+        Ok(response["data"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .clone())
     }
 
     /// 根据资源池 ID 查询主机列表

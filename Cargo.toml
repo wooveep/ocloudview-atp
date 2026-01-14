@@ -1,21 +1,30 @@
-# OCloudView-ATP 项目元数据
-#
-# 注意: 本项目采用嵌套工作区结构
-# - atp-application/ : 应用层工作区 (CLI, HTTP-API)
-# - atp-core/        : 核心模块工作区
-# - guest-verifier/  : Guest 验证器工作区
-#
-# 构建命令:
-#   cd atp-application && cargo build --release
-#   cd atp-core && cargo build --release
-#   cd guest-verifier && cargo build --release
-
 [workspace]
-# 虚拟工作区，仅用于共享元数据
-# 实际构建请进入各子目录
-exclude = ["atp-application", "atp-core", "guest-verifier", "atp-common"]
-
 resolver = "2"
+
+# 统一管理所有子项目，直接指向最底层的叶子项目
+members = [
+    # atp-application 组件
+    "atp-application/cli",
+    "atp-application/http-api",
+    "atp-application/scenarios",
+    
+    # atp-core 组件
+    "atp-core/transport",
+    "atp-core/protocol",
+    "atp-core/executor",
+    "atp-core/vdiplatform",
+    "atp-core/storage",
+    "atp-core/verification-server",
+    "atp-core/ssh-executor",
+    "atp-core/gluster",
+    
+    # guest-verifier 组件
+    "guest-verifier/verifier-core",
+    "guest-verifier/verifier-agent",
+    
+    # 独立组件
+    "atp-common",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,12 +33,62 @@ authors = ["OCloudView ATP Team"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-# 共享基础依赖版本 (供参考，实际使用在各子工作区定义)
+# --- 本地库依赖 ---
+atp-transport = { path = "atp-core/transport" }
+atp-protocol = { path = "atp-core/protocol" }
+atp-executor = { path = "atp-core/executor" }
+atp-ssh-executor = { path = "atp-core/ssh-executor" }
+atp-gluster = { path = "atp-core/gluster" }
+atp-storage = { path = "atp-core/storage" }
+atp-vdiplatform = { path = "atp-core/vdiplatform" }
+atp-common = { path = "atp-common" }
+
+# --- 异步运行时 ---
 tokio = { version = "1.35", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# --- 序列化 ---
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# --- 错误处理 ---
 anyhow = "1.0"
 thiserror = "1.0"
+
+# --- 日志 ---
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# --- 时间 ---
+chrono = "0.4"
+
+# --- CLI ---
+clap = { version = "4.4", features = ["derive"] }
+
+# --- HTTP ---
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# --- WebSocket ---
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+
+# --- 异步 trait ---
+async-trait = "0.1"
+
+# --- UUID ---
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# --- Libvirt 绑定 ---
+virt = { version = "0.4", features = ["qemu"] }
+
+# --- SSH 客户端 ---
+russh = "0.46"
+russh-keys = "0.46"
+
+# --- 正则表达式 ---
+regex = "1.10"
+
+# --- 目录处理 ---
+dirs = "5.0"

@@ -3,18 +3,19 @@
 //! 通过 QGA (QEMU Guest Agent) 协议向 Windows 虚拟机发送 Base64 编码的 PowerShell 命令
 //! WebSocket 验证是可选的，用于确认虚拟机是否收到并执行了命令
 
-use crate::commands::common::{build_host_id_to_name_map_from_json, create_vdi_client};
+use crate::commands::common::create_vdi_client;
 use crate::PowerShellAction;
 use anyhow::{Context, Result};
-use atp_executor::TestConfig;
+use atp_executor::{TestConfig, VdiBatchOps};
 use atp_protocol::qga::{GuestExecCommand, GuestExecStatus, QgaProtocol};
 use atp_protocol::Protocol; // 需要导入 trait 来使用 connect/disconnect 方法
-use atp_transport::{HostConnection, HostInfo};
+use atp_transport::{HostConnection, HostInfo, TransportManager};
 use atp_vdiplatform::DomainStatus;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use colored::Colorize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// VM 目标信息
@@ -515,23 +516,15 @@ async fn list_vms(config_path: &str, host_filter: Option<String>) -> Result<()> 
     let config = TestConfig::load_from_path(config_path)?;
     let vdi_config = config.vdi.as_ref().context("未配置 VDI 平台")?;
 
-    let client = create_vdi_client(vdi_config).await?;
+    let client = Arc::new(create_vdi_client(vdi_config).await?);
 
     let domains = client.domain().list_all().await?;
-    let hosts_vec = client.host().list_all().await?;
 
     // 建立主机ID到名称的映射
-    let host_id_to_name = build_host_id_to_name_map_from_json(&hosts_vec);
-
-    // 建立主机ID到IP的映射（用于后续显示）
-    let mut host_id_to_ip: HashMap<String, String> = HashMap::new();
-    for host in &hosts_vec {
-        let host_id = host["id"].as_str().unwrap_or("").to_string();
-        let host_ip = host["ip"].as_str().unwrap_or("").to_string();
-        if !host_id.is_empty() {
-            host_id_to_ip.insert(host_id, host_ip);
-        }
-    }
+    let transport_manager = Arc::new(TransportManager::default());
+    let batch_ops = VdiBatchOps::new(Arc::clone(&transport_manager), Arc::clone(&client));
+    let host_id_to_name = batch_ops.build_host_id_to_name_map().await?;
+    let host_id_to_ip = batch_ops.build_host_id_to_ip_map().await?;
 
     println!(
         "{:<30} {:<20} {:<15} {:<15}",

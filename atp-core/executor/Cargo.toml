@@ -20,6 +20,8 @@ atp-transport = { path = "../transport" }
 atp-protocol = { path = "../protocol" }
 atp-storage = { path = "../storage" }  # 数据库支持
 atp-vdiplatform = { path = "../vdiplatform" }  # VDI 平台集成
+atp-ssh-executor = { path = "../ssh-executor" }  # SSH 执行器
+atp-gluster = { path = "../gluster" }  # Gluster 操作
 verification-server = { path = "../verification-server" }  # 输入验证服务
 atp-common = { path = "../../atp-common" }  # 共享类型
 

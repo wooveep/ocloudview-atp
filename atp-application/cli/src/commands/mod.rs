@@ -6,6 +6,7 @@ pub mod db;
 pub mod host;
 pub mod keyboard;
 pub mod mouse;
+pub mod output; // 通用输出格式化
 pub mod powershell; // PowerShell 远程执行
 pub mod report; // 启用报告命令
 pub mod scenario;

@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use sqlx::SqlitePool;
 use tracing::{debug, info};
 
 use crate::error::Result;
@@ -23,7 +24,7 @@ pub const DEFAULT_CACHE_TTL: i64 = 300;
 
 /// VDI 数据缓存管理器
 pub struct VdiCacheManager {
-    storage: StorageManager,
+    pool: SqlitePool,
     /// 缓存过期时间（秒），默认 300 秒 = 5 分钟
     cache_ttl: i64,
 }
@@ -32,19 +33,30 @@ impl VdiCacheManager {
     /// 创建新的缓存管理器
     pub fn new(storage: StorageManager) -> Self {
         Self {
-            storage,
+            pool: storage.pool().clone(),
             cache_ttl: DEFAULT_CACHE_TTL,
         }
     }
 
     /// 创建带自定义 TTL 的缓存管理器
     pub fn with_ttl(storage: StorageManager, cache_ttl: i64) -> Self {
-        Self { storage, cache_ttl }
+        Self {
+            pool: storage.pool().clone(),
+            cache_ttl,
+        }
     }
 
-    /// 获取存储管理器引用
-    pub fn storage(&self) -> &StorageManager {
-        &self.storage
+    /// 从数据库连接池创建缓存管理器
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            cache_ttl: DEFAULT_CACHE_TTL,
+        }
+    }
+
+    /// 获取数据库连接池引用
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// 获取缓存 TTL
@@ -59,7 +71,7 @@ impl VdiCacheManager {
     /// 从 API 响应同步主机数据到本地
     pub async fn sync_hosts(&self, hosts: &[Value]) -> Result<usize> {
         info!("Syncing {} hosts to local cache", hosts.len());
-        let repo = HostRepository::new(self.storage.pool().clone());
+        let repo = HostRepository::new(self.pool.clone());
         let now = Utc::now();
         let mut count = 0;
 
@@ -71,10 +83,7 @@ impl VdiCacheManager {
                 let record = HostRecord {
                     id: id.to_string(),
                     host: host["ip"].as_str().unwrap_or("").to_string(),
-                    uri: format!(
-                        "qemu+tcp://{}/system",
-                        host["ip"].as_str().unwrap_or("")
-                    ),
+                    uri: format!("qemu+tcp://{}/system", host["ip"].as_str().unwrap_or("")),
                     tags: None,
                     metadata: Some(host.to_string()),
                     // 保留现有 SSH 配置
@@ -82,10 +91,7 @@ impl VdiCacheManager {
                     ssh_password: existing.as_ref().and_then(|e| e.ssh_password.clone()),
                     ssh_port: existing.as_ref().and_then(|e| e.ssh_port),
                     ssh_key_path: existing.as_ref().and_then(|e| e.ssh_key_path.clone()),
-                    created_at: existing
-                        .as_ref()
-                        .map(|e| e.created_at)
-                        .unwrap_or(now),
+                    created_at: existing.as_ref().map(|e| e.created_at).unwrap_or(now),
                     updated_at: now,
                     // VDI 扩展字段
                     ip_v6: host["ipV6"].as_str().map(|s| s.to_string()),
@@ -124,7 +130,7 @@ impl VdiCacheManager {
     /// 从 API 响应同步资源池数据到本地
     pub async fn sync_pools(&self, pools: &[Value]) -> Result<usize> {
         info!("Syncing {} pools to local cache", pools.len());
-        let repo = PoolRepository::new(self.storage.pool().clone());
+        let repo = PoolRepository::new(self.pool.clone());
         let now = Utc::now();
         let mut count = 0;
 
@@ -159,7 +165,7 @@ impl VdiCacheManager {
     /// 从 API 响应同步 OVS 数据到本地
     pub async fn sync_ovs(&self, ovs_list: &[Value]) -> Result<usize> {
         info!("Syncing {} OVS records to local cache", ovs_list.len());
-        let repo = OvsRepository::new(self.storage.pool().clone());
+        let repo = OvsRepository::new(self.pool.clone());
         let now = Utc::now();
         let mut count = 0;
 
@@ -190,11 +196,8 @@ impl VdiCacheManager {
 
     /// 从 API 响应同步级联端口组数据到本地
     pub async fn sync_cascad_port_groups(&self, groups: &[Value]) -> Result<usize> {
-        info!(
-            "Syncing {} cascad port groups to local cache",
-            groups.len()
-        );
-        let repo = CascadPortGroupRepository::new(self.storage.pool().clone());
+        info!("Syncing {} cascad port groups to local cache", groups.len());
+        let repo = CascadPortGroupRepository::new(self.pool.clone());
         let now = Utc::now();
         let mut count = 0;
 
@@ -226,7 +229,7 @@ impl VdiCacheManager {
     /// 从 API 响应同步虚拟机数据到本地
     pub async fn sync_domains(&self, domains: &[Value]) -> Result<usize> {
         info!("Syncing {} domains to local cache", domains.len());
-        let repo = DomainRepository::new(self.storage.pool().clone());
+        let repo = DomainRepository::new(self.pool.clone());
         let now = Utc::now();
         let mut count = 0;
 
@@ -314,7 +317,7 @@ impl VdiCacheManager {
     /// 从 API 响应同步存储池数据到本地
     pub async fn sync_storage_pools(&self, pools: &[Value]) -> Result<usize> {
         info!("Syncing {} storage pools to local cache", pools.len());
-        let repo = StoragePoolRepository::new(self.storage.pool().clone());
+        let repo = StoragePoolRepository::new(self.pool.clone());
         let now = Utc::now();
         let mut count = 0;
 
@@ -357,7 +360,7 @@ impl VdiCacheManager {
     /// 从 API 响应同步存储卷数据到本地
     pub async fn sync_storage_volumes(&self, volumes: &[Value]) -> Result<usize> {
         info!("Syncing {} storage volumes to local cache", volumes.len());
-        let repo = StorageVolumeRepository::new(self.storage.pool().clone());
+        let repo = StorageVolumeRepository::new(self.pool.clone());
         let now = Utc::now();
         let mut count = 0;
 
@@ -400,14 +403,11 @@ impl VdiCacheManager {
     pub async fn is_cache_valid(&self, table: &str) -> Result<bool> {
         let cutoff = Utc::now() - chrono::Duration::seconds(self.cache_ttl);
 
-        let query = format!(
-            "SELECT COUNT(*) FROM {} WHERE cached_at >= ?",
-            table
-        );
+        let query = format!("SELECT COUNT(*) FROM {} WHERE cached_at >= ?", table);
 
         let row: (i64,) = sqlx::query_as(&query)
             .bind(&cutoff)
-            .fetch_one(self.storage.pool())
+            .fetch_one(&self.pool)
             .await
             .map_err(crate::error::StorageError::DatabaseError)?;
 
@@ -438,12 +438,12 @@ impl VdiCacheManager {
     pub async fn cleanup_stale_cache(&self) -> Result<()> {
         info!("Cleaning up stale cache (TTL: {} seconds)", self.cache_ttl);
 
-        let domain_repo = DomainRepository::new(self.storage.pool().clone());
-        let pool_repo = PoolRepository::new(self.storage.pool().clone());
-        let ovs_repo = OvsRepository::new(self.storage.pool().clone());
-        let cpg_repo = CascadPortGroupRepository::new(self.storage.pool().clone());
-        let sp_repo = StoragePoolRepository::new(self.storage.pool().clone());
-        let sv_repo = StorageVolumeRepository::new(self.storage.pool().clone());
+        let domain_repo = DomainRepository::new(self.pool.clone());
+        let pool_repo = PoolRepository::new(self.pool.clone());
+        let ovs_repo = OvsRepository::new(self.pool.clone());
+        let cpg_repo = CascadPortGroupRepository::new(self.pool.clone());
+        let sp_repo = StoragePoolRepository::new(self.pool.clone());
+        let sv_repo = StorageVolumeRepository::new(self.pool.clone());
 
         let domains_cleared = domain_repo.clear_stale(self.cache_ttl).await?;
         let pools_cleared = pool_repo.clear_stale(self.cache_ttl).await?;
