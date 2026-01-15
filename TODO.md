@@ -10,8 +10,8 @@
 | 测试覆盖率 | **78%** | 80%+ |
 | 文档数量 | 44 | - |
 
-**当前版本**: v0.5.0-dev
-**最后更新**: 2026-01-03
+**当前版本**: v0.5.1-dev
+**最后更新**: 2026-01-16
 
 ---
 
@@ -30,7 +30,7 @@
 | Verification Server | **100%** | ~1,195 | **Executor集成完成** |
 | Guest Verifier | 80% | ~2,910 | Linux/Windows完成 |
 | CLI | 95% | ~1,200 | **VDI集成完成** |
-| HTTP API | 0% | - | 未开始 |
+| HTTP API | 20% | ~300 | 基础框架 |
 
 ---
 
@@ -89,7 +89,7 @@
 ### 低优先级 (后续)
 
 #### 10. HTTP API
-- [ ] Axum 框架搭建
+- [x] Axum 框架搭建
 - [ ] RESTful API 端点
 - [ ] WebSocket 实时推送
 - [ ] Swagger 文档
@@ -200,7 +200,8 @@
 - [x] **完整创建虚拟机 API** (新增)
 
 **待完成**:
-- [ ] 数据库缓存层 (低优先级)
+- [x] 数据库缓存层 (VdiCacheManager)
+- [x] GlusterFS 脑裂自动修复
 
 ---
 
@@ -529,6 +530,19 @@
 - **代码清理**
   - 删除 `test.toml` 和 `test.toml.example`
   - 更新 `.gitignore` 忽略 `config/atp.toml`
+
+### 2026-01-16 (v0.5.1-dev)
+- **架构重构**
+  - [x] 项目重构为单一 Workspace
+  - [x] 移除 Orchestrator 模块 (彻底清理)
+  - [x] VDI 批量操作逻辑迁移至 Executor
+- **功能增强**
+  - [x] VDI 缓存管理器
+  - [x] VDI 磁盘位置查询
+  - [x] 强制重新分配 (Force Reassignment)
+  - [x] GlusterFS 脑裂修复
+- **HTTP API**
+  - [x] 基础框架搭建 (Axum)
 
 ### 2026-01-01 (v0.5.0-dev)
 - **Executor 模块重大更新** (+1,224 行代码)

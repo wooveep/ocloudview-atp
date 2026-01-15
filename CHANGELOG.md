@@ -5,6 +5,24 @@ All notable changes to the OCloudView ATP project will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1-dev] - 2026-01-16
+
+### Added
+- **工作区重构与模块优化**
+  - 项目重构为单一 Workspace 结构，统一管理依赖
+  - Executor 新增 SSH 操作模块
+  - Executor 新增存储操作模块
+- **VDI 功能增强**
+  - 新增 VDI 缓存管理器 (VDI Cache Manager)
+  - 新增 GlusterFS 脑裂修复功能 (Split-brain repair)
+  - VDI 命令增强: 支持强制重新分配 (Force reassignment)
+  - VDI 命令增强: 新增磁盘位置查询功能
+
+### Changed
+- **CLI 改进**: 引入新的 CLI 输出格式化
+- **架构调整**: 移除 Orchestrator 模块，完成向 Executor 的逻辑迁移
+- **代码迁移**: VDI 批量操作核心逻辑迁移至 Executor 模块
+
 ## [0.5.0-dev] - 2026-01-03
 
 ### Added
