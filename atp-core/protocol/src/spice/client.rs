@@ -442,13 +442,21 @@ impl SpiceClient {
     }
 
     /// 获取输入通道引用
-    pub fn inputs(&self) -> &InputsChannel {
-        self.inputs_channel.as_ref().expect("输入通道未连接")
+    ///
+    /// # Returns
+    /// - `Some(&InputsChannel)` 如果输入通道已连接
+    /// - `None` 如果输入通道未连接
+    pub fn inputs(&self) -> Option<&InputsChannel> {
+        self.inputs_channel.as_ref()
     }
 
     /// 获取输入通道可变引用
-    pub fn inputs_mut(&mut self) -> &mut InputsChannel {
-        self.inputs_channel.as_mut().expect("输入通道未连接")
+    ///
+    /// # Returns
+    /// - `Some(&mut InputsChannel)` 如果输入通道已连接
+    /// - `None` 如果输入通道未连接
+    pub fn inputs_mut(&mut self) -> Option<&mut InputsChannel> {
+        self.inputs_channel.as_mut()
     }
 
     /// 获取显示通道引用

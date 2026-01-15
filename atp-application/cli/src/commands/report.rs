@@ -102,12 +102,10 @@ async fn show_report(id: i64) -> Result<()> {
 
     let report = storage.reports().get_by_id(id).await?;
 
-    if report.is_none() {
+    let Some(report) = report else {
         println!("\n{} 未找到报告 ID: {}", "✗".red(), id);
         return Ok(());
-    }
-
-    let report = report.unwrap();
+    };
     let steps = storage.reports().get_steps(id).await?;
 
     println!("\n{} 测试报告详情\n", "📊".cyan());
@@ -183,12 +181,10 @@ async fn export_report(id: i64, output: &str, format: &str) -> Result<()> {
 
     let report = storage.reports().get_by_id(id).await?;
 
-    if report.is_none() {
+    let Some(report) = report else {
         println!("\n{} 未找到报告 ID: {}", "✗".red(), id);
         return Ok(());
-    }
-
-    let report = report.unwrap();
+    };
     let steps = storage.reports().get_steps(id).await?;
 
     // 构建导出数据
@@ -203,7 +199,7 @@ async fn export_report(id: i64, output: &str, format: &str) -> Result<()> {
         _ => anyhow::bail!("不支持的格式: {}", format),
     };
 
-    std::fs::write(output, content)?;
+    tokio::fs::write(output, content).await?;
 
     println!("\n{} 报告已导出到: {}", "✓".green(), output.yellow());
 

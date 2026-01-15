@@ -105,10 +105,13 @@ impl SpiceProtocol {
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         let client_guard = client.read().await;
+        let inputs = client_guard
+            .inputs()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("输入通道未连接".to_string()))?;
         if pressed {
-            client_guard.inputs().send_key_down(scancode).await
+            inputs.send_key_down(scancode).await
         } else {
-            client_guard.inputs().send_key_up(scancode).await
+            inputs.send_key_up(scancode).await
         }
     }
 
@@ -120,10 +123,10 @@ impl SpiceProtocol {
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         let client_guard = client.read().await;
-        client_guard
+        let inputs = client_guard
             .inputs()
-            .send_mouse_position(x, y, display_id)
-            .await
+            .ok_or_else(|| ProtocolError::ConnectionFailed("输入通道未连接".to_string()))?;
+        inputs.send_mouse_position(x, y, display_id).await
     }
 
     /// 发送鼠标点击
@@ -134,10 +137,13 @@ impl SpiceProtocol {
             .ok_or_else(|| ProtocolError::ConnectionFailed("SPICE 未连接".to_string()))?;
 
         let client_guard = client.read().await;
+        let inputs = client_guard
+            .inputs()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("输入通道未连接".to_string()))?;
         if pressed {
-            client_guard.inputs().send_mouse_press(button).await
+            inputs.send_mouse_press(button).await
         } else {
-            client_guard.inputs().send_mouse_release(button).await
+            inputs.send_mouse_release(button).await
         }
     }
 }

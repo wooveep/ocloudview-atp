@@ -898,7 +898,9 @@ async fn batch_assign_vms(
             assigned_vms.len()
         );
         for vm in &assigned_vms {
-            println!("  - {} -> {}", vm.name, vm.bound_user.as_ref().unwrap());
+            if let Some(user) = &vm.bound_user {
+                println!("  - {} -> {}", vm.name, user);
+            }
         }
         println!();
         (unassigned_vms.iter().cloned().collect(), true)
@@ -906,7 +908,9 @@ async fn batch_assign_vms(
         // 交互模式：提示用户选择
         println!("\n⚠️  发现 {} 个虚拟机已有绑定用户:", assigned_vms.len());
         for vm in &assigned_vms {
-            println!("  - {} -> {}", vm.name, vm.bound_user.as_ref().unwrap());
+            if let Some(user) = &vm.bound_user {
+                println!("  - {} -> {}", vm.name, user);
+            }
         }
         println!("\n选择操作:");
         println!("  [S] 跳过已绑定虚拟机，仅分配未绑定的");

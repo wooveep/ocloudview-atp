@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI 改进**: 引入新的 CLI 输出格式化
 - **架构调整**: 移除 Orchestrator 模块，完成向 Executor 的逻辑迁移
 - **代码迁移**: VDI 批量操作核心逻辑迁移至 Executor 模块
+- **SPICE 客户端 API**: `inputs()` 和 `inputs_mut()` 返回 `Option` 而非 panic
+
+### Fixed
+- **架构合规性修复**
+  - 修复 `atp-core/storage/src/connection.rs` 中 async 函数使用阻塞 I/O 的问题 (改用 `tokio::fs`)
+  - 修复 `atp-application/cli/src/commands/powershell.rs` 中 async 函数使用阻塞 I/O 的问题
+  - 修复 `atp-application/cli/src/commands/report.rs` 中 async 函数使用阻塞 I/O 的问题
+  - 移除 `atp-core/protocol/src/spice/client.rs` 中的 `.expect()` 调用，改为安全的 `Option` 返回
+  - 修复 `atp-application/cli/src/commands/report.rs` 中的 `.unwrap()` 模式
+  - 修复 `atp-application/cli/src/commands/vdi.rs` 中的 `.unwrap()` 模式
 
 ## [0.5.0-dev] - 2026-01-03
 

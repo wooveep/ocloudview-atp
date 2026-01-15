@@ -22,9 +22,6 @@ package-lock.json
 # 测试结果
 test-results/
 *.log
-.agent/
-.mcp.json
-.mcp_config.json
 # 临时文件
 *.tmp
 *.temp

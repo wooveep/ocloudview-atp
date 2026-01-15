@@ -86,7 +86,9 @@ async fn exec_powershell(
     let ps_command = if let Some(cmd) = command {
         cmd
     } else if let Some(file) = script_file {
-        std::fs::read_to_string(&file).context(format!("无法读取脚本文件: {}", file))?
+        tokio::fs::read_to_string(&file)
+            .await
+            .context(format!("无法读取脚本文件: {}", file))?
     } else {
         anyhow::bail!("必须指定 --command 或 --script-file");
     };

@@ -30,7 +30,7 @@ impl StorageManager {
 
         // 确保父目录存在
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 StorageError::ConnectionError(format!("Failed to create database directory: {}", e))
             })?;
         }
@@ -74,14 +74,16 @@ impl StorageManager {
         // 使用 sqlx 的 migrate! 宏嵌入并运行迁移
         // 路径是相对于 Cargo.toml 的
         let migrator = sqlx::migrate!("./migrations");
-        
+
         // 获取待应用的迁移数量（用于报告）
         // 注意：这里无法直接获取数量，migrator.run() 返回 Result<()>
         // 我们先运行迁移
         migrator
             .run(&self.pool)
             .await
-            .map_err(|e: sqlx::migrate::MigrateError| StorageError::MigrationError(e.to_string()))?;
+            .map_err(|e: sqlx::migrate::MigrateError| {
+                StorageError::MigrationError(e.to_string())
+            })?;
 
         debug!("Database migrations completed successfully");
 
