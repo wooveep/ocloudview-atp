@@ -51,7 +51,9 @@ fn default_command_timeout() -> Duration {
 }
 
 fn default_verify_host_key() -> bool {
-    true
+    // 默认禁用验证：当前 known_hosts 功能未实现，启用验证会导致所有连接失败
+    // 后续实现 known_hosts 检查后可改为 true
+    false
 }
 
 impl SshConfig {
