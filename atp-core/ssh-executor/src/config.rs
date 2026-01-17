@@ -37,6 +37,9 @@ pub struct SshConfig {
     /// 命令执行超时
     #[serde(with = "humantime_serde", default = "default_command_timeout")]
     pub command_timeout: Duration,
+    /// 是否验证 SSH Host Key（默认 true）
+    #[serde(default = "default_verify_host_key")]
+    pub verify_host_key: bool,
 }
 
 fn default_connect_timeout() -> Duration {
@@ -47,6 +50,10 @@ fn default_command_timeout() -> Duration {
     Duration::from_secs(60)
 }
 
+fn default_verify_host_key() -> bool {
+    true
+}
+
 impl SshConfig {
     /// 使用密码认证创建配置
     ///
@@ -54,7 +61,11 @@ impl SshConfig {
     /// * `host` - 主机地址
     /// * `username` - 用户名
     /// * `password` - 密码
-    pub fn with_password(host: impl Into<String>, username: impl Into<String>, password: impl Into<String>) -> Self {
+    pub fn with_password(
+        host: impl Into<String>,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
         Self {
             host: host.into(),
             port: 22,
@@ -62,6 +73,7 @@ impl SshConfig {
             auth: AuthMethod::Password(password.into()),
             connect_timeout: default_connect_timeout(),
             command_timeout: default_command_timeout(),
+            verify_host_key: default_verify_host_key(),
         }
     }
 
@@ -71,7 +83,11 @@ impl SshConfig {
     /// * `host` - 主机地址
     /// * `username` - 用户名
     /// * `key_path` - 私钥路径
-    pub fn with_key(host: impl Into<String>, username: impl Into<String>, key_path: impl Into<PathBuf>) -> Self {
+    pub fn with_key(
+        host: impl Into<String>,
+        username: impl Into<String>,
+        key_path: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             host: host.into(),
             port: 22,
@@ -82,6 +98,7 @@ impl SshConfig {
             },
             connect_timeout: default_connect_timeout(),
             command_timeout: default_command_timeout(),
+            verify_host_key: default_verify_host_key(),
         }
     }
 
@@ -96,6 +113,7 @@ impl SshConfig {
             auth: AuthMethod::DefaultKey,
             connect_timeout: default_connect_timeout(),
             command_timeout: default_command_timeout(),
+            verify_host_key: default_verify_host_key(),
         }
     }
 
@@ -114,6 +132,12 @@ impl SshConfig {
     /// 设置命令执行超时
     pub fn command_timeout(mut self, timeout: Duration) -> Self {
         self.command_timeout = timeout;
+        self
+    }
+
+    /// 设置是否验证 SSH Host Key
+    pub fn verify_host_key(mut self, verify: bool) -> Self {
+        self.verify_host_key = verify;
         self
     }
 

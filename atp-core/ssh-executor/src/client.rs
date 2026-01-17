@@ -46,19 +46,31 @@ impl CommandOutput {
     }
 }
 
-/// SSH 客户端处理器（自动接受所有 host key）
-struct ClientHandler;
+/// SSH 客户端处理器
+///
+/// 根据配置决定是否验证 host key:
+/// - verify_host_key = true: 拒绝连接（需实现 known_hosts 检查）
+/// - verify_host_key = false: 自动接受（存在 MITM 风险）
+struct ClientHandler {
+    verify_host_key: bool,
+}
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    /// 自动接受所有 host key（不验证 fingerprint）
+    /// 根据配置决定是否接受 host key
     async fn check_server_key(
         &mut self,
         _server_public_key: &russh::keys::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        debug!("自动接受服务器 host key");
-        Ok(true)
+        if self.verify_host_key {
+            // 启用验证时拒绝连接（known_hosts 功能未实现）
+            warn!("SSH Host Key 验证已启用，但 known_hosts 功能未实现，拒绝连接");
+            Ok(false)
+        } else {
+            debug!("SSH Host Key 验证已禁用，自动接受 host key");
+            Ok(true)
+        }
     }
 }
 
@@ -78,7 +90,9 @@ impl SshClient {
             ..Default::default()
         };
 
-        let handler = ClientHandler;
+        let handler = ClientHandler {
+            verify_host_key: config.verify_host_key,
+        };
 
         // 建立 TCP 连接并进行 SSH 握手
         let handle = timeout(
@@ -120,7 +134,11 @@ impl SshClient {
         match &self.config.auth {
             AuthMethod::Password(password) => {
                 let password = password.clone();
-                debug!("使用密码认证, 用户名: {}, 密码长度: {}", username, password.len());
+                debug!(
+                    "使用密码认证, 用户名: {}, 密码长度: {}",
+                    username,
+                    password.len()
+                );
 
                 // 首先尝试普通密码认证
                 let auth_result = self
@@ -140,25 +158,37 @@ impl SshClient {
                 }
 
                 // 如果密码认证失败，检查是否支持 keyboard-interactive
-                if let russh::client::AuthResult::Failure { remaining_methods, .. } = &auth_result {
+                if let russh::client::AuthResult::Failure {
+                    remaining_methods, ..
+                } = &auth_result
+                {
                     if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive) {
                         debug!("服务器不支持密码认证，尝试 keyboard-interactive 认证");
-                        return self.authenticate_keyboard_interactive(&username, &password).await;
+                        return self
+                            .authenticate_keyboard_interactive(&username, &password)
+                            .await;
                     }
                 }
 
                 warn!("密码认证失败, AuthResult: {:?}", auth_result);
-                return Err(SshError::AuthenticationError(
-                    format!("密码认证失败: 用户名或密码错误, 结果: {:?}", auth_result),
-                ));
+                return Err(SshError::AuthenticationError(format!(
+                    "密码认证失败: 用户名或密码错误, 结果: {:?}",
+                    auth_result
+                )));
             }
-            AuthMethod::Key { key_path, passphrase } => {
+            AuthMethod::Key {
+                key_path,
+                passphrase,
+            } => {
                 debug!("使用密钥认证: {:?}", key_path);
                 let expanded_path = expand_path(key_path)?;
                 let key_pair = load_key(&expanded_path, passphrase.as_deref())?;
 
                 // 获取服务器支持的最佳 RSA 哈希算法
-                let hash_alg = self.handle.best_supported_rsa_hash().await
+                let hash_alg = self
+                    .handle
+                    .best_supported_rsa_hash()
+                    .await
                     .map_err(|e| SshError::SessionError(format!("获取哈希算法失败: {}", e)))?
                     .flatten();
 
@@ -181,7 +211,10 @@ impl SshClient {
                 let key_pair = load_default_key()?;
 
                 // 获取服务器支持的最佳 RSA 哈希算法
-                let hash_alg = self.handle.best_supported_rsa_hash().await
+                let hash_alg = self
+                    .handle
+                    .best_supported_rsa_hash()
+                    .await
                     .map_err(|e| SshError::SessionError(format!("获取哈希算法失败: {}", e)))?
                     .flatten();
 
@@ -206,7 +239,11 @@ impl SshClient {
     }
 
     /// 使用 keyboard-interactive 方式进行认证
-    async fn authenticate_keyboard_interactive(&mut self, username: &str, password: &str) -> Result<()> {
+    async fn authenticate_keyboard_interactive(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<()> {
         debug!("开始 keyboard-interactive 认证");
 
         // 启动 keyboard-interactive 认证
@@ -214,24 +251,39 @@ impl SshClient {
             .handle
             .authenticate_keyboard_interactive_start(username, None)
             .await
-            .map_err(|e| SshError::AuthenticationError(format!("keyboard-interactive 认证失败: {}", e)))?;
+            .map_err(|e| {
+                SshError::AuthenticationError(format!("keyboard-interactive 认证失败: {}", e))
+            })?;
 
         // 处理认证流程（可能需要多轮交互）
         for round in 0..MAX_KEYBOARD_INTERACTIVE_ROUNDS {
-            debug!("keyboard-interactive 第 {} 轮, 响应: {:?}", round + 1, response);
+            debug!(
+                "keyboard-interactive 第 {} 轮, 响应: {:?}",
+                round + 1,
+                response
+            );
 
             match response {
                 KeyboardInteractiveAuthResponse::Success => {
                     debug!("keyboard-interactive 认证成功");
                     return Ok(());
                 }
-                KeyboardInteractiveAuthResponse::Failure { remaining_methods, .. } => {
-                    warn!("keyboard-interactive 认证失败, 剩余方法: {:?}", remaining_methods);
+                KeyboardInteractiveAuthResponse::Failure {
+                    remaining_methods, ..
+                } => {
+                    warn!(
+                        "keyboard-interactive 认证失败, 剩余方法: {:?}",
+                        remaining_methods
+                    );
                     return Err(SshError::AuthenticationError(
                         "keyboard-interactive 认证失败: 用户名或密码错误".to_string(),
                     ));
                 }
-                KeyboardInteractiveAuthResponse::InfoRequest { name, instructions, prompts } => {
+                KeyboardInteractiveAuthResponse::InfoRequest {
+                    name,
+                    instructions,
+                    prompts,
+                } => {
                     debug!(
                         "收到 InfoRequest: name={}, instructions={}, prompts={:?}",
                         name, instructions, prompts
@@ -239,10 +291,8 @@ impl SshClient {
 
                     // 对每个 prompt 回复密码
                     // 通常第一个 prompt 是密码提示
-                    let responses: Vec<String> = prompts
-                        .iter()
-                        .map(|_| password.to_string())
-                        .collect();
+                    let responses: Vec<String> =
+                        prompts.iter().map(|_| password.to_string()).collect();
 
                     debug!("发送 {} 个响应", responses.len());
 
@@ -250,7 +300,12 @@ impl SshClient {
                         .handle
                         .authenticate_keyboard_interactive_respond(responses)
                         .await
-                        .map_err(|e| SshError::AuthenticationError(format!("keyboard-interactive 响应失败: {}", e)))?;
+                        .map_err(|e| {
+                            SshError::AuthenticationError(format!(
+                                "keyboard-interactive 响应失败: {}",
+                                e
+                            ))
+                        })?;
                 }
             }
         }
@@ -386,10 +441,7 @@ impl SshClient {
 }
 
 /// 加载私钥文件
-fn load_key(
-    path: &PathBuf,
-    passphrase: Option<&str>,
-) -> Result<russh::keys::PrivateKey> {
+fn load_key(path: &PathBuf, passphrase: Option<&str>) -> Result<russh::keys::PrivateKey> {
     let key = load_secret_key(path, passphrase)
         .map_err(|e| SshError::KeyLoadError(format!("加载密钥失败 {:?}: {}", path, e)))?;
     Ok(key)
@@ -397,9 +449,8 @@ fn load_key(
 
 /// 加载默认密钥（尝试多个常见位置）
 fn load_default_key() -> Result<russh::keys::PrivateKey> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        SshError::KeyLoadError("无法获取用户主目录".to_string())
-    })?;
+    let home =
+        dirs::home_dir().ok_or_else(|| SshError::KeyLoadError("无法获取用户主目录".to_string()))?;
 
     let key_paths = [
         home.join(".ssh/id_ed25519"),
