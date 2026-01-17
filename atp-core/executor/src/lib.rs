@@ -4,6 +4,7 @@
 
 pub mod runner;
 pub mod scenario;
+pub mod spice_connector;
 pub mod ssh_manager;
 pub mod storage_ops;
 pub mod test_config;

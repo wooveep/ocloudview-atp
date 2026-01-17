@@ -5,6 +5,21 @@ All notable changes to the OCloudView ATP project will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **SPICE 协议安全修复**: 修复 `channel.rs` 中 RSA 认证流程的 unsafe `unwrap()` 调用，改为安全的错误传播机制。
+
+### Added
+- **SPICE 集成测试**: 新增 `atp-core/executor/tests/spice_integration_tests.rs`，验证 VDI 连接和输入发送功能。
+- **Skills 增强**:
+  - `code-reviewer`: 区分单元测试和集成测试的错误处理规则。
+  - `rust-best-practices`: 添加测试代码风格指南 ("Fallible Tests" pattern)。
+
+### Fixed
+- **集成测试修复**: `spice_integration_tests.rs` 重构为使用 `Result` 返回类型，优化错误上下文报告。
+- **示例代码修复**: 修复 `spice_demo.rs` 编译错误，使其可用作手动验证工具。
+
 ## [0.5.1-dev] - 2026-01-16
 
 ### Added
@@ -17,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 新增 GlusterFS 脑裂修复功能 (Split-brain repair)
   - VDI 命令增强: 支持强制重新分配 (Force reassignment)
   - VDI 命令增强: 新增磁盘位置查询功能
+- **SSH Host Key 验证配置**
+  - 新增 `[ssh].verify_host_key` 配置项控制 SSH Host Key 验证行为
+  - 默认启用验证 (生产安全)，可配置禁用 (测试/开发环境)
 
 ### Changed
 - **CLI 改进**: 引入新的 CLI 输出格式化

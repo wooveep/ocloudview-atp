@@ -111,8 +111,8 @@ impl KeyModifiers {
 ///
 /// 用于发送键盘和鼠标事件到虚拟机
 pub struct InputsChannel {
-    /// 底层通道连接
-    connection: ChannelConnection,
+    /// 底层通道连接 (使用 Mutex 实现内部可变性)
+    connection: tokio::sync::Mutex<ChannelConnection>,
     /// 当前鼠标按钮状态
     buttons_state: AtomicU32,
     /// 键盘修饰键状态
@@ -125,7 +125,10 @@ impl InputsChannel {
     /// 创建新的 Inputs 通道
     pub fn new(channel_id: u8) -> Self {
         Self {
-            connection: ChannelConnection::new(ChannelType::Inputs, channel_id),
+            connection: tokio::sync::Mutex::new(ChannelConnection::new(
+                ChannelType::Inputs,
+                channel_id,
+            )),
             buttons_state: AtomicU32::new(0),
             key_modifiers: KeyModifiers::default(),
             motion_ack_pending: AtomicU32::new(0),
@@ -140,9 +143,11 @@ impl InputsChannel {
         connection_id: u32,
         password: Option<&str>,
     ) -> Result<()> {
-        self.connection
+        let mut connection = self.connection.lock().await;
+        connection
             .connect(host, port, connection_id, password)
             .await?;
+        drop(connection);
 
         // 处理 Inputs 初始化消息
         self.handle_init().await?;
@@ -153,7 +158,8 @@ impl InputsChannel {
 
     /// 处理初始化消息
     async fn handle_init(&mut self) -> Result<()> {
-        let (msg_type, data) = self.connection.receive_message().await?;
+        let mut connection = self.connection.lock().await;
+        let (msg_type, data) = connection.receive_message().await?;
 
         // SPICE_MSG_INPUTS_INIT = 101
         if msg_type == 101 {
@@ -168,12 +174,12 @@ impl InputsChannel {
 
     /// 断开连接
     pub async fn disconnect(&mut self) -> Result<()> {
-        self.connection.disconnect().await
+        self.connection.lock().await.disconnect().await
     }
 
     /// 是否已连接
-    pub fn is_connected(&self) -> bool {
-        self.connection.is_connected()
+    pub async fn is_connected(&self) -> bool {
+        self.connection.lock().await.is_connected()
     }
 
     // ========================================================================
@@ -185,25 +191,36 @@ impl InputsChannel {
     /// # Arguments
     /// * `scancode` - PC AT 扫描码
     pub async fn send_key_down(&self, scancode: u32) -> Result<()> {
-        self.check_connected()?;
-
         let msg = MsgcInputsKeyDown::new(scancode);
+        let data = msg.to_bytes();
 
-        // 需要可变借用来发送消息
-        // 由于 connection 的 send_message 需要 &mut self，
-        // 但我们想保持 send_key_down 为 &self
-        // 这里使用 unsafe 或者重新设计
+        let mut connection = self.connection.lock().await;
+        if !connection.is_connected() {
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
+        }
 
-        // TODO: 重构为内部可变性
+        connection.send_message(101, &data).await?; // SPICE_MSGC_INPUTS_KEY_DOWN
+
         trace!("发送键盘按下: scancode=0x{:X}", scancode);
-
-        // 临时解决方案：直接返回 Ok，实际实现需要重构
         Ok(())
     }
 
     /// 发送键盘释放事件
     pub async fn send_key_up(&self, scancode: u32) -> Result<()> {
-        self.check_connected()?;
+        let msg = MsgcInputsKeyUp::new(scancode);
+        let data = msg.to_bytes();
+
+        let mut connection = self.connection.lock().await;
+        if !connection.is_connected() {
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
+        }
+
+        connection.send_message(102, &data).await?; // SPICE_MSGC_INPUTS_KEY_UP
+
         trace!("发送键盘释放: scancode=0x{:X}", scancode);
         Ok(())
     }
@@ -218,12 +235,19 @@ impl InputsChannel {
 
     /// 发送键盘修饰键状态
     pub async fn send_key_modifiers(&self, modifiers: KeyModifiers) -> Result<()> {
-        self.check_connected()?;
-
         let msg = MsgInputsKeyModifiers::new(modifiers.to_flags());
-        trace!("发送键盘修饰键: {:?}", modifiers);
+        let data = msg.to_bytes();
 
-        // TODO: 实现实际发送
+        let mut connection = self.connection.lock().await;
+        if !connection.is_connected() {
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
+        }
+
+        connection.send_message(103, &data).await?; // SPICE_MSGC_INPUTS_KEY_MODIFIERS
+
+        trace!("发送键盘修饰键: {:?}", modifiers);
         Ok(())
     }
 
@@ -257,59 +281,94 @@ impl InputsChannel {
 
     /// 发送鼠标位置（客户端模式，绝对坐标）
     pub async fn send_mouse_position(&self, x: u32, y: u32, display_id: u8) -> Result<()> {
-        self.check_connected()?;
-
         let buttons = self.buttons_state.load(Ordering::Relaxed);
-        let msg = MsgcInputsMousePosition::new(x, y, buttons, display_id);
+
+        let mut data = Vec::with_capacity(13);
+        data.extend_from_slice(&x.to_le_bytes());
+        data.extend_from_slice(&y.to_le_bytes());
+        data.extend_from_slice(&buttons.to_le_bytes());
+        data.push(display_id);
+
+        let mut connection = self.connection.lock().await;
+        if !connection.is_connected() {
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
+        }
+
+        connection.send_message(112, &data).await?; // SPICE_MSGC_INPUTS_MOUSE_POSITION
 
         self.motion_ack_pending.fetch_add(1, Ordering::Relaxed);
         trace!("发送鼠标位置: ({}, {}) display={}", x, y, display_id);
-
-        // TODO: 实现实际发送
         Ok(())
     }
 
     /// 发送鼠标相对移动（服务器模式）
     pub async fn send_mouse_motion(&self, dx: i32, dy: i32) -> Result<()> {
-        self.check_connected()?;
-
         let buttons = self.buttons_state.load(Ordering::Relaxed);
-        let msg = MsgcInputsMouseMotion::new(dx, dy, buttons);
+
+        let mut data = Vec::with_capacity(12);
+        data.extend_from_slice(&dx.to_le_bytes());
+        data.extend_from_slice(&dy.to_le_bytes());
+        data.extend_from_slice(&buttons.to_le_bytes());
+
+        let mut connection = self.connection.lock().await;
+        if !connection.is_connected() {
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
+        }
+
+        connection.send_message(111, &data).await?; // SPICE_MSGC_INPUTS_MOUSE_MOTION
 
         self.motion_ack_pending.fetch_add(1, Ordering::Relaxed);
         trace!("发送鼠标移动: ({}, {})", dx, dy);
-
-        // TODO: 实现实际发送
         Ok(())
     }
 
     /// 发送鼠标按下事件
     pub async fn send_mouse_press(&self, button: MouseButton) -> Result<()> {
-        self.check_connected()?;
-
         // 更新按钮状态
         let mask = button.to_mask();
         let new_state = self.buttons_state.fetch_or(mask, Ordering::Relaxed) | mask;
 
-        let msg = MsgcInputsMousePress::new(button.to_id(), new_state);
-        trace!("发送鼠标按下: {:?}", button);
+        let mut data = Vec::with_capacity(5);
+        data.push(button.to_id());
+        data.extend_from_slice(&new_state.to_le_bytes());
 
-        // TODO: 实现实际发送
+        let mut connection = self.connection.lock().await;
+        if !connection.is_connected() {
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
+        }
+
+        connection.send_message(113, &data).await?; // SPICE_MSGC_INPUTS_MOUSE_PRESS
+
+        trace!("发送鼠标按下: {:?}", button);
         Ok(())
     }
 
     /// 发送鼠标释放事件
     pub async fn send_mouse_release(&self, button: MouseButton) -> Result<()> {
-        self.check_connected()?;
-
         // 更新按钮状态
         let mask = button.to_mask();
         let new_state = self.buttons_state.fetch_and(!mask, Ordering::Relaxed) & !mask;
 
-        let msg = MsgcInputsMouseRelease::new(button.to_id(), new_state);
-        trace!("发送鼠标释放: {:?}", button);
+        let mut data = Vec::with_capacity(5);
+        data.push(button.to_id());
+        data.extend_from_slice(&new_state.to_le_bytes());
 
-        // TODO: 实现实际发送
+        let mut connection = self.connection.lock().await;
+        if !connection.is_connected() {
+            return Err(ProtocolError::ConnectionFailed(
+                "Inputs 通道未连接".to_string(),
+            ));
+        }
+
+        connection.send_message(114, &data).await?; // SPICE_MSGC_INPUTS_MOUSE_RELEASE
+
+        trace!("发送鼠标释放: {:?}", button);
         Ok(())
     }
 
@@ -350,16 +409,6 @@ impl InputsChannel {
     // 辅助方法
     // ========================================================================
 
-    /// 检查连接状态
-    fn check_connected(&self) -> Result<()> {
-        if !self.connection.is_connected() {
-            return Err(ProtocolError::ConnectionFailed(
-                "Inputs 通道未连接".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
     /// 获取当前按钮状态
     pub fn buttons_state(&self) -> u32 {
         self.buttons_state.load(Ordering::Relaxed)
@@ -372,7 +421,8 @@ impl InputsChannel {
 
     /// 处理服务器消息
     pub async fn process_events(&mut self) -> Result<()> {
-        let (msg_type, data) = self.connection.receive_message().await?;
+        let mut connection = self.connection.lock().await;
+        let (msg_type, data) = connection.receive_message().await?;
 
         match msg_type {
             // SPICE_MSG_INPUTS_KEY_MODIFIERS

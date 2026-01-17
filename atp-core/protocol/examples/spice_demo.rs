@@ -8,12 +8,9 @@
 //! cargo run --example spice_demo
 //! ```
 
-use atp_protocol::spice::{
-    SpiceClient, SpiceConfig, SpiceDiscovery,
-    MouseButton, MouseMode,
-};
+use atp_protocol::spice::{MouseButton, MouseMode, SpiceClient, SpiceConfig, SpiceDiscovery};
 use tokio;
-use tracing::{info, error};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,8 +39,8 @@ async fn demo_manual_connection() -> Result<(), Box<dyn std::error::Error>> {
 
     // 创建 SPICE 配置
     let config = SpiceConfig::new("192.168.1.100", 5900)
-        .with_password("your-spice-password")  // 如果有密码
-        .with_client_mouse(true);               // 使用客户端鼠标模式
+        .with_password("your-spice-password") // 如果有密码
+        .with_client_mouse(true); // 使用客户端鼠标模式
 
     // 创建客户端
     let mut client = SpiceClient::new(config);
@@ -73,21 +70,17 @@ async fn demo_libvirt_discovery() -> Result<(), Box<dyn std::error::Error>> {
     info!("=== 示例 2: 通过 libvirt 发现虚拟机 ===");
 
     // 连接到 libvirt
-    let conn = virt::connect::Connect::open("qemu:///system")?;
+    let conn = virt::connect::Connect::open(Some("qemu:///system"))?;
 
     // 创建 SPICE 发现器
-    let discovery = SpiceDiscovery::new()
-        .with_default_host("192.168.1.100");
+    let discovery = SpiceDiscovery::new().with_default_host("192.168.1.100");
 
     // 发现所有带 SPICE 的虚拟机
     let vms = discovery.discover_all(&conn).await?;
 
     info!("发现 {} 个带 SPICE 的虚拟机:", vms.len());
     for vm in &vms {
-        info!("  - {} ({}:{})",
-              vm.name,
-              vm.host,
-              vm.port);
+        info!("  - {} ({}:{})", vm.name, vm.host, vm.port);
         if let Some(tls_port) = vm.tls_port {
             info!("    TLS 端口: {}", tls_port);
         }
@@ -97,8 +90,7 @@ async fn demo_libvirt_discovery() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(vm) = vms.first() {
         info!("连接到虚拟机: {}", vm.name);
 
-        let config = SpiceConfig::new(&vm.host, vm.port)
-            .with_password_opt(vm.password.clone());
+        let config = SpiceConfig::new(&vm.host, vm.port).with_password_opt(vm.password.clone());
 
         let mut client = SpiceClient::new(config);
         client.connect().await?;
@@ -122,7 +114,7 @@ async fn demo_user_interaction() -> Result<(), Box<dyn std::error::Error>> {
     let config = SpiceConfig::new("192.168.1.100", 5900)
         .with_password("password")
         .with_client_mouse(true)
-        .with_auto_inputs(true);  // 自动连接输入通道
+        .with_auto_inputs(true); // 自动连接输入通道
 
     let mut client = SpiceClient::new(config);
     client.connect().await?;
@@ -130,7 +122,7 @@ async fn demo_user_interaction() -> Result<(), Box<dyn std::error::Error>> {
     info!("✓ 已连接到虚拟机");
 
     // 获取输入通道
-    let inputs = client.inputs();
+    let inputs = client.inputs().ok_or("输入通道未连接")?;
 
     // 1. 模拟键盘输入
     info!("模拟键盘输入: 输入文本 'Hello World'");
@@ -141,7 +133,7 @@ async fn demo_user_interaction() -> Result<(), Box<dyn std::error::Error>> {
     info!("模拟按键组合: Ctrl+C");
     use atp_protocol::spice::inputs::scancode;
     inputs.send_key_down(scancode::LEFT_CTRL).await?;
-    inputs.send_key_press(0x2E).await?;  // C 键
+    inputs.send_key_press(0x2E).await?; // C 键
     inputs.send_key_up(scancode::LEFT_CTRL).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
@@ -194,8 +186,7 @@ async fn demo_concurrent_vms() -> Result<(), Box<dyn std::error::Error>> {
 
     for (host, port, name) in vms {
         let task = tokio::spawn(async move {
-            let config = SpiceConfig::new(host, port)
-                .with_password("password");
+            let config = SpiceConfig::new(host, port).with_password("password");
 
             let mut client = SpiceClient::new(config);
 
@@ -204,9 +195,10 @@ async fn demo_concurrent_vms() -> Result<(), Box<dyn std::error::Error>> {
                     info!("[{}] 连接成功", name);
 
                     // 执行一些操作
-                    let inputs = client.inputs();
-                    inputs.send_text("Test from ").await?;
-                    inputs.send_text(name).await?;
+                    if let Some(inputs) = client.inputs() {
+                        inputs.send_text("Test from ").await?;
+                        inputs.send_text(name).await?;
+                    }
 
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
@@ -254,7 +246,7 @@ async fn demo_load_testing() -> Result<(), Box<dyn std::error::Error>> {
     let mut operation_count = 0u64;
 
     while start_time.elapsed() < duration {
-        let inputs = client.inputs();
+        let inputs = client.inputs().ok_or("输入通道未连接")?;
 
         // 模拟鼠标移动
         let x = rand::random::<u32>() % 1920;

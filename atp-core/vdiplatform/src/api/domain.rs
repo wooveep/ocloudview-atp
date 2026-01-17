@@ -13,17 +13,27 @@ use tracing::info;
 use crate::client::VdiClient;
 use crate::error::{Result, VdiError};
 use crate::models::{
-    Domain, CreateDomainRequest, DomainStatus,
-    BatchTaskRequest, BatchTaskResponse, BatchDeleteRequest,
-    CloneDomainRequest, CloneDomainResponse,
-    UpdateMemCpuRequest, BatchUpdateConfigRequest,
-    NetworkConfigRequest, NicInfo,
-    CreateDomainFullRequest, CreateDomainResponse,
+    BatchDeleteRequest, BatchTaskRequest, BatchTaskResponse, BatchUpdateConfigRequest,
+    CloneDomainRequest, CloneDomainResponse, CreateDomainFullRequest, CreateDomainRequest,
+    CreateDomainResponse, Domain, DomainStatus, NetworkConfigRequest, NicInfo, UpdateMemCpuRequest,
 };
 
 /// 虚拟机管理 API
 pub struct DomainApi<'a> {
     client: &'a VdiClient,
+}
+
+/// SPICE 连接信息
+#[derive(Debug, Clone)]
+pub struct SpiceConnectionInfo {
+    /// SPICE 服务器地址
+    pub host: String,
+    /// SPICE 端口
+    pub port: u16,
+    /// TLS 端口 (可选)
+    pub tls_port: Option<u16>,
+    /// 密码 (base64 解码后)
+    pub password: Option<String>,
 }
 
 impl<'a> DomainApi<'a> {
@@ -37,13 +47,22 @@ impl<'a> DomainApi<'a> {
     /// # Arguments
     /// * `page_num` - 页码(从1开始)
     /// * `page_size` - 每页数量
-    pub async fn list_paged(&self, page_num: u32, page_size: u32) -> Result<Vec<serde_json::Value>> {
+    pub async fn list_paged(
+        &self,
+        page_num: u32,
+        page_size: u32,
+    ) -> Result<Vec<serde_json::Value>> {
         info!("查询虚拟机列表: 第{}页, 每页{}条", page_num, page_size);
 
-        let url = format!("/ocloud/v1/domain?pageNum={}&pageSize={}", page_num, page_size);
+        let url = format!(
+            "/ocloud/v1/domain?pageNum={}&pageSize={}",
+            page_num, page_size
+        );
         let token = self.client.get_token().await?;
 
-        let response: serde_json::Value = self.client.http_client()
+        let response: serde_json::Value = self
+            .client
+            .http_client()
             .get(&format!("{}{}", self.client.base_url(), url))
             .header("Token", &token)
             .send()
@@ -82,7 +101,10 @@ impl<'a> DomainApi<'a> {
     /// // 查询所有关机的虚拟机
     /// let shutoff_vms = client.domain().list_by_status(Some(DomainStatus::Shutoff)).await?;
     /// ```
-    pub async fn list_by_status(&self, status: Option<DomainStatus>) -> Result<Vec<serde_json::Value>> {
+    pub async fn list_by_status(
+        &self,
+        status: Option<DomainStatus>,
+    ) -> Result<Vec<serde_json::Value>> {
         let all = self.list_all().await?;
 
         match status {
@@ -109,7 +131,10 @@ impl<'a> DomainApi<'a> {
     ///     .list_by_statuses(&[DomainStatus::Running, DomainStatus::Paused])
     ///     .await?;
     /// ```
-    pub async fn list_by_statuses(&self, statuses: &[DomainStatus]) -> Result<Vec<serde_json::Value>> {
+    pub async fn list_by_statuses(
+        &self,
+        statuses: &[DomainStatus],
+    ) -> Result<Vec<serde_json::Value>> {
         let all = self.list_all().await?;
         let target_codes: Vec<i64> = statuses.iter().map(|s| s.code()).collect();
 
@@ -139,27 +164,28 @@ impl<'a> DomainApi<'a> {
             DomainStatus::Shutoff,
             DomainStatus::Paused,
             DomainStatus::Hibernated,
-        ]).await
+        ])
+        .await
     }
 
     /// 创建虚拟机
     pub async fn create(&self, req: CreateDomainRequest) -> Result<Domain> {
         info!("创建虚拟机: {}", req.name);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain", Some(req))
+            .await
     }
 
     /// 查询虚拟机详情
     pub async fn get(&self, domain_id: &str) -> Result<Domain> {
         info!("查询虚拟机详情: {}", domain_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 查询虚拟机详情(返回原始 JSON)
@@ -167,9 +193,14 @@ impl<'a> DomainApi<'a> {
         info!("查询虚拟机详情(原始): {}", domain_id);
 
         let token = self.client.get_token().await?;
-        let response: serde_json::Value = self.client
+        let response: serde_json::Value = self
+            .client
             .http_client()
-            .get(format!("{}/ocloud/v1/domain/{}", self.client.base_url(), domain_id))
+            .get(format!(
+                "{}/ocloud/v1/domain/{}",
+                self.client.base_url(),
+                domain_id
+            ))
             .header("Token", &token)
             .send()
             .await
@@ -189,61 +220,73 @@ impl<'a> DomainApi<'a> {
     /// 启动虚拟机
     pub async fn start(&self, domain_id: &str) -> Result<()> {
         info!("启动虚拟机: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/start",
-            Some(serde_json::json!({ "domain_id": domain_id })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                "/ocloud/v1/domain/start",
+                Some(serde_json::json!({ "domain_id": domain_id })),
+            )
+            .await
     }
 
     /// 关闭虚拟机
     pub async fn shutdown(&self, domain_id: &str) -> Result<()> {
         info!("关闭虚拟机: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/close",
-            Some(serde_json::json!({ "domain_id": domain_id })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                "/ocloud/v1/domain/close",
+                Some(serde_json::json!({ "domain_id": domain_id })),
+            )
+            .await
     }
 
     /// 重启虚拟机
     pub async fn reboot(&self, domain_id: &str) -> Result<()> {
         info!("重启虚拟机: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/reboot",
-            Some(serde_json::json!({ "domain_id": domain_id })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                "/ocloud/v1/domain/reboot",
+                Some(serde_json::json!({ "domain_id": domain_id })),
+            )
+            .await
     }
 
     /// 删除虚拟机
     pub async fn delete(&self, domain_id: &str) -> Result<()> {
         info!("删除虚拟机: {}", domain_id);
-        self.client.request(
-            Method::DELETE,
-            "/ocloud/v1/domain/delete",
-            Some(serde_json::json!({ "domain_id": domain_id })),
-        ).await
+        self.client
+            .request(
+                Method::DELETE,
+                "/ocloud/v1/domain/delete",
+                Some(serde_json::json!({ "domain_id": domain_id })),
+            )
+            .await
     }
 
     /// 暂停虚拟机
     pub async fn suspend(&self, domain_id: &str) -> Result<()> {
         info!("暂停虚拟机: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/suspend",
-            Some(serde_json::json!({ "domain_id": domain_id })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                "/ocloud/v1/domain/suspend",
+                Some(serde_json::json!({ "domain_id": domain_id })),
+            )
+            .await
     }
 
     /// 恢复虚拟机
     pub async fn resume(&self, domain_id: &str) -> Result<()> {
         info!("恢复虚拟机: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/resume",
-            Some(serde_json::json!({ "domain_id": domain_id })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                "/ocloud/v1/domain/resume",
+                Some(serde_json::json!({ "domain_id": domain_id })),
+            )
+            .await
     }
 
     /// 绑定用户到虚拟机
@@ -337,11 +380,9 @@ impl<'a> DomainApi<'a> {
     /// ```
     pub async fn batch_start(&self, req: BatchTaskRequest) -> Result<BatchTaskResponse> {
         info!("批量启动虚拟机: {} 个", req.id_list.len());
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/start",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/start", Some(req))
+            .await
     }
 
     /// 批量关闭虚拟机
@@ -350,11 +391,9 @@ impl<'a> DomainApi<'a> {
     /// * `req` - 批量任务请求，可设置 is_force 为强制关机
     pub async fn batch_shutdown(&self, req: BatchTaskRequest) -> Result<BatchTaskResponse> {
         info!("批量关闭虚拟机: {} 个", req.id_list.len());
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/close",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/close", Some(req))
+            .await
     }
 
     /// 批量强制关闭虚拟机
@@ -364,11 +403,9 @@ impl<'a> DomainApi<'a> {
     pub async fn batch_force_shutdown(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量强制关闭虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list).with_force(true);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/close",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/close", Some(req))
+            .await
     }
 
     /// 批量重启虚拟机
@@ -378,11 +415,9 @@ impl<'a> DomainApi<'a> {
     pub async fn batch_reboot(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量重启虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/reboot",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/reboot", Some(req))
+            .await
     }
 
     /// 批量删除虚拟机
@@ -401,15 +436,14 @@ impl<'a> DomainApi<'a> {
     /// client.domain().batch_delete(req).await?;
     /// ```
     pub async fn batch_delete(&self, req: BatchDeleteRequest) -> Result<()> {
-        info!("批量删除虚拟机: {} 个, 回收站: {}",
+        info!(
+            "批量删除虚拟机: {} 个, 回收站: {}",
             req.domain_id_list.len(),
             req.is_recycle == 1
         );
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/delete",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/delete", Some(req))
+            .await
     }
 
     // ============================================
@@ -432,13 +466,22 @@ impl<'a> DomainApi<'a> {
     /// let req = CloneDomainRequest::batch("vm-prefix-".into(), 5);
     /// let response = client.domain().clone("source-vm-id", req).await?;
     /// ```
-    pub async fn clone(&self, domain_id: &str, req: CloneDomainRequest) -> Result<CloneDomainResponse> {
-        info!("克隆虚拟机: {} -> {} (数量: {:?})", domain_id, req.name, req.number);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/clone", domain_id),
-            Some(req),
-        ).await
+    pub async fn clone(
+        &self,
+        domain_id: &str,
+        req: CloneDomainRequest,
+    ) -> Result<CloneDomainResponse> {
+        info!(
+            "克隆虚拟机: {} -> {} (数量: {:?})",
+            domain_id, req.name, req.number
+        );
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/clone", domain_id),
+                Some(req),
+            )
+            .await
     }
 
     // ============================================
@@ -458,14 +501,15 @@ impl<'a> DomainApi<'a> {
     /// client.domain().batch_update_mem_cpu(req).await?;
     /// ```
     pub async fn batch_update_mem_cpu(&self, req: UpdateMemCpuRequest) -> Result<()> {
-        info!("批量修改 CPU/内存: {} 个虚拟机, CPU: {:?}, 内存: {:?} MB",
-            req.list_id.len(), req.cpu, req.memory
+        info!(
+            "批量修改 CPU/内存: {} 个虚拟机, CPU: {:?}, 内存: {:?} MB",
+            req.list_id.len(),
+            req.cpu,
+            req.memory
         );
-        self.client.request(
-            Method::PATCH,
-            "/ocloud/v1/domain/mem-cpu",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::PATCH, "/ocloud/v1/domain/mem-cpu", Some(req))
+            .await
     }
 
     /// 批量修改虚拟机其他配置
@@ -478,11 +522,9 @@ impl<'a> DomainApi<'a> {
     /// - nested_virtual: 嵌套虚拟化
     pub async fn batch_update_config(&self, req: BatchUpdateConfigRequest) -> Result<()> {
         info!("批量修改虚拟机配置: {} 个", req.id_list.len());
-        self.client.request(
-            Method::PATCH,
-            "/ocloud/v1/domain",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::PATCH, "/ocloud/v1/domain", Some(req))
+            .await
     }
 
     // ============================================
@@ -505,11 +547,13 @@ impl<'a> DomainApi<'a> {
     /// ```
     pub async fn update_nic(&self, domain_id: &str, req: NetworkConfigRequest) -> Result<()> {
         info!("更新虚拟机网卡: {}, OVS: {}", domain_id, req.ovs_id);
-        self.client.request(
-            Method::PATCH,
-            &format!("/ocloud/v1/domain/{}/nic", domain_id),
-            Some(req),
-        ).await
+        self.client
+            .request(
+                Method::PATCH,
+                &format!("/ocloud/v1/domain/{}/nic", domain_id),
+                Some(req),
+            )
+            .await
     }
 
     /// 删除虚拟机网卡
@@ -519,11 +563,13 @@ impl<'a> DomainApi<'a> {
     /// * `mac` - 网卡 MAC 地址
     pub async fn delete_nic(&self, domain_id: &str, mac: &str) -> Result<()> {
         info!("删除虚拟机网卡: {}, MAC: {}", domain_id, mac);
-        self.client.request(
-            Method::DELETE,
-            &format!("/ocloud/v1/domain/{}/nic/{}", domain_id, mac),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::DELETE,
+                &format!("/ocloud/v1/domain/{}/nic/{}", domain_id, mac),
+                None::<()>,
+            )
+            .await
     }
 
     /// 获取虚拟机网卡列表
@@ -532,11 +578,13 @@ impl<'a> DomainApi<'a> {
     /// * `domain_id` - 虚拟机 ID
     pub async fn get_nics(&self, domain_id: &str) -> Result<Vec<NicInfo>> {
         info!("获取虚拟机网卡列表: {}", domain_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/nic", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/nic", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     // ============================================
@@ -562,14 +610,13 @@ impl<'a> DomainApi<'a> {
     /// let response = client.domain().create_full(req).await?;
     /// ```
     pub async fn create_full(&self, req: CreateDomainFullRequest) -> Result<CreateDomainResponse> {
-        info!("创建虚拟机（完整参数）: {}, CPU: {:?}, 内存: {:?} MB",
+        info!(
+            "创建虚拟机（完整参数）: {}, CPU: {:?}, 内存: {:?} MB",
             req.name, req.cpu, req.memory
         );
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain", Some(req))
+            .await
     }
 
     // ============================================
@@ -580,88 +627,76 @@ impl<'a> DomainApi<'a> {
     pub async fn batch_suspend(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量挂起虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/suspend",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/suspend", Some(req))
+            .await
     }
 
     /// 批量恢复虚拟机
     pub async fn batch_resume(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量恢复虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/resume",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/resume", Some(req))
+            .await
     }
 
     /// 批量休眠虚拟机
     pub async fn batch_sleep(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量休眠虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/sleep",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/sleep", Some(req))
+            .await
     }
 
     /// 批量唤醒虚拟机
     pub async fn batch_wakeup(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量唤醒虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/wakeup",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/wakeup", Some(req))
+            .await
     }
 
     /// 批量设置还原点
     pub async fn batch_freeze(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量设置还原点: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/freeze",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/freeze", Some(req))
+            .await
     }
 
     /// 批量取消还原点
     pub async fn batch_restore(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量取消还原点: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/restore",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/restore", Some(req))
+            .await
     }
 
     /// 批量重置虚拟机
     pub async fn batch_rebase(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("批量重置虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/rebase",
-            Some(req),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/rebase", Some(req))
+            .await
     }
 
     /// 无 GPU 模式启动虚拟机
     pub async fn batch_start_without_gpu(&self, id_list: Vec<String>) -> Result<BatchTaskResponse> {
         info!("无 GPU 模式启动虚拟机: {} 个", id_list.len());
         let req = BatchTaskRequest::new(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/start-without-gpu",
-            Some(req),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                "/ocloud/v1/domain/start-without-gpu",
+                Some(req),
+            )
+            .await
     }
 
     // ============================================
@@ -672,11 +707,14 @@ impl<'a> DomainApi<'a> {
     pub async fn get_disks(&self, domain_id: &str) -> Result<Vec<serde_json::Value>> {
         info!("获取虚拟机磁盘列表: {}", domain_id);
         // API 可能返回对象或数组，需要处理两种情况
-        let response: serde_json::Value = self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/disk", domain_id),
-            None::<()>,
-        ).await?;
+        let response: serde_json::Value = self
+            .client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/disk", domain_id),
+                None::<()>,
+            )
+            .await?;
 
         // 如果返回的是数组，直接使用
         if let Some(arr) = response.as_array() {
@@ -704,66 +742,91 @@ impl<'a> DomainApi<'a> {
     /// 添加磁盘
     pub async fn add_disk(&self, domain_id: &str, disk: serde_json::Value) -> Result<()> {
         info!("添加磁盘到虚拟机: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/disk", domain_id),
-            Some(disk),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/disk", domain_id),
+                Some(disk),
+            )
+            .await
     }
 
     /// 删除磁盘
     pub async fn delete_disk(&self, domain_id: &str, volume_id: &str) -> Result<()> {
         info!("删除虚拟机磁盘: {} -> {}", domain_id, volume_id);
-        self.client.request(
-            Method::DELETE,
-            &format!("/ocloud/v1/domain/{}/disk/{}", domain_id, volume_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::DELETE,
+                &format!("/ocloud/v1/domain/{}/disk/{}", domain_id, volume_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 卸载磁盘
     pub async fn unmount_disk(&self, domain_id: &str, volume_id: &str) -> Result<()> {
         info!("卸载虚拟机磁盘: {} -> {}", domain_id, volume_id);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/disk/{}/unmount", domain_id, volume_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/disk/{}/unmount", domain_id, volume_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 磁盘扩容
     pub async fn expand_disk(&self, domain_id: &str, volume_id: &str, size_gb: u64) -> Result<()> {
         info!("磁盘扩容: {} -> {} ({}GB)", domain_id, volume_id, size_gb);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/disk/{}/expand", domain_id, volume_id),
-            Some(serde_json::json!({ "size": size_gb })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/disk/{}/expand", domain_id, volume_id),
+                Some(serde_json::json!({ "size": size_gb })),
+            )
+            .await
     }
 
     /// 设置磁盘限速
-    pub async fn set_disk_speed_limit(&self, domain_id: &str, volume_id: &str, read_bytes: Option<i64>, write_bytes: Option<i64>) -> Result<()> {
+    pub async fn set_disk_speed_limit(
+        &self,
+        domain_id: &str,
+        volume_id: &str,
+        read_bytes: Option<i64>,
+        write_bytes: Option<i64>,
+    ) -> Result<()> {
         info!("设置磁盘限速: {} -> {}", domain_id, volume_id);
-        self.client.request(
-            Method::PATCH,
-            &format!("/ocloud/v1/domain/{}/disk/{}/speed-limit", domain_id, volume_id),
-            Some(serde_json::json!({
-                "readBytesSec": read_bytes,
-                "writeBytesSec": write_bytes,
-            })),
-        ).await
+        self.client
+            .request(
+                Method::PATCH,
+                &format!(
+                    "/ocloud/v1/domain/{}/disk/{}/speed-limit",
+                    domain_id, volume_id
+                ),
+                Some(serde_json::json!({
+                    "readBytesSec": read_bytes,
+                    "writeBytesSec": write_bytes,
+                })),
+            )
+            .await
     }
 
     /// 批量增加独立磁盘
-    pub async fn batch_add_independent_disk(&self, id_list: Vec<String>, disk_config: serde_json::Value) -> Result<()> {
+    pub async fn batch_add_independent_disk(
+        &self,
+        id_list: Vec<String>,
+        disk_config: serde_json::Value,
+    ) -> Result<()> {
         info!("批量增加独立磁盘: {} 个", id_list.len());
         let mut req = disk_config;
         req["idList"] = serde_json::json!(id_list);
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/independent-disk",
-            Some(req),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                "/ocloud/v1/domain/independent-disk",
+                Some(req),
+            )
+            .await
     }
 
     // ============================================
@@ -773,44 +836,57 @@ impl<'a> DomainApi<'a> {
     /// 获取虚拟机 ISO 列表
     pub async fn get_isos(&self, domain_id: &str) -> Result<Vec<serde_json::Value>> {
         info!("获取虚拟机 ISO 列表: {}", domain_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/iso", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/iso", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 添加 ISO
-    pub async fn add_iso(&self, domain_id: &str, iso_path: &str, storage_pool_id: Option<&str>) -> Result<()> {
+    pub async fn add_iso(
+        &self,
+        domain_id: &str,
+        iso_path: &str,
+        storage_pool_id: Option<&str>,
+    ) -> Result<()> {
         info!("添加 ISO 到虚拟机: {} -> {}", domain_id, iso_path);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/iso", domain_id),
-            Some(serde_json::json!({
-                "isoPath": iso_path,
-                "storagePoolId": storage_pool_id,
-            })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/iso", domain_id),
+                Some(serde_json::json!({
+                    "isoPath": iso_path,
+                    "storagePoolId": storage_pool_id,
+                })),
+            )
+            .await
     }
 
     /// 删除 ISO
     pub async fn delete_iso(&self, domain_id: &str) -> Result<()> {
         info!("删除虚拟机 ISO: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/iso/delete", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/iso/delete", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 动态更换 ISO
     pub async fn change_iso(&self, domain_id: &str, iso_path: &str) -> Result<()> {
         info!("更换虚拟机 ISO: {} -> {}", domain_id, iso_path);
-        self.client.request(
-            Method::PATCH,
-            &format!("/ocloud/v1/domain/{}/iso", domain_id),
-            Some(serde_json::json!({ "isoPath": iso_path })),
-        ).await
+        self.client
+            .request(
+                Method::PATCH,
+                &format!("/ocloud/v1/domain/{}/iso", domain_id),
+                Some(serde_json::json!({ "isoPath": iso_path })),
+            )
+            .await
     }
 
     // ============================================
@@ -820,11 +896,13 @@ impl<'a> DomainApi<'a> {
     /// 添加网卡
     pub async fn add_nic(&self, domain_id: &str, req: NetworkConfigRequest) -> Result<()> {
         info!("添加网卡到虚拟机: {}, OVS: {}", domain_id, req.ovs_id);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/nic", domain_id),
-            Some(req),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/nic", domain_id),
+                Some(req),
+            )
+            .await
     }
 
     // ============================================
@@ -834,32 +912,43 @@ impl<'a> DomainApi<'a> {
     /// 迁移虚拟机
     pub async fn migrate(&self, domain_id: &str, target_host_id: &str) -> Result<()> {
         info!("迁移虚拟机: {} -> {}", domain_id, target_host_id);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/migrate", domain_id),
-            Some(serde_json::json!({ "hostId": target_host_id })),
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/migrate", domain_id),
+                Some(serde_json::json!({ "hostId": target_host_id })),
+            )
+            .await
     }
 
     /// 请求后台监控
     pub async fn request_monitor(&self, domain_id: &str) -> Result<String> {
         info!("请求后台监控: {}", domain_id);
-        let response: serde_json::Value = self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/monitor", domain_id),
-            None::<()>,
-        ).await?;
+        let response: serde_json::Value = self
+            .client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/monitor", domain_id),
+                None::<()>,
+            )
+            .await?;
         Ok(response["requestId"].as_str().unwrap_or("").to_string())
     }
 
     /// 查询后台监控状态
-    pub async fn get_monitor_status(&self, domain_id: &str, request_id: &str) -> Result<serde_json::Value> {
+    pub async fn get_monitor_status(
+        &self,
+        domain_id: &str,
+        request_id: &str,
+    ) -> Result<serde_json::Value> {
         info!("查询后台监控状态: {} -> {}", domain_id, request_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/monitor/{}", domain_id, request_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/monitor/{}", domain_id, request_id),
+                None::<()>,
+            )
+            .await
     }
 
     // ============================================
@@ -869,155 +958,230 @@ impl<'a> DomainApi<'a> {
     /// 获取虚拟机子虚机列表
     pub async fn get_children(&self, domain_id: &str) -> Result<Vec<serde_json::Value>> {
         info!("获取母虚机的子虚机: {}", domain_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/child", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/child", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 获取虚拟机 VNC/SPICE 端口
     pub async fn get_ports(&self, domain_id: &str) -> Result<serde_json::Value> {
         info!("获取虚拟机端口: {}", domain_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/port", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/port", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 获取 VNC 访问密码
     pub async fn get_vnc_password(&self, domain_id: &str) -> Result<String> {
         info!("获取 VNC 密码: {}", domain_id);
-        let response: serde_json::Value = self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/vnc-password", domain_id),
-            None::<()>,
-        ).await?;
+        let response: serde_json::Value = self
+            .client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/vnc-password", domain_id),
+                None::<()>,
+            )
+            .await?;
         Ok(response["password"].as_str().unwrap_or("").to_string())
     }
 
     /// 获取 SPICE Key
     pub async fn get_spice_key(&self, domain_id: &str) -> Result<String> {
         info!("获取 SPICE Key: {}", domain_id);
-        let response: serde_json::Value = self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/spice-key", domain_id),
-            None::<()>,
-        ).await?;
+        let response: serde_json::Value = self
+            .client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/spice-key", domain_id),
+                None::<()>,
+            )
+            .await?;
         Ok(response["key"].as_str().unwrap_or("").to_string())
+    }
+
+    /// 获取 SPICE 密码 (base64 解码)
+    pub async fn get_spice_password(&self, domain_id: &str) -> Result<String> {
+        use base64::{engine::general_purpose, Engine as _};
+
+        // 1. 获取 key
+        let key = self.get_spice_key(domain_id).await?;
+        if key.is_empty() {
+            return Ok(String::new());
+        }
+
+        // 2. base64 解码
+        let decoded = general_purpose::STANDARD
+            .decode(&key)
+            .map_err(|e| VdiError::ParseError(format!("SPICE Key Base64 解码失败: {}", e)))?;
+
+        Ok(String::from_utf8_lossy(&decoded).to_string())
+    }
+
+    /// 获取完整的 SPICE 连接信息
+    pub async fn get_spice_connection_info(&self, domain_id: &str) -> Result<SpiceConnectionInfo> {
+        // 并行获取端口和密码
+        let (ports, password) = tokio::try_join!(
+            self.get_ports(domain_id),
+            self.get_spice_password(domain_id)
+        )?;
+
+        // 解析端口
+        let port = ports["spicePort"].as_i64().unwrap_or(0) as u16;
+        let tls_port = ports["spiceTlsPort"].as_i64().map(|p| p as u16);
+
+        // 获取主机地址 (从 base_url 解析或使用默认)
+        // VDI API 不返回宿主机 IP，通常使用 VDI 平台 IP 或配置指定
+        // 这里暂时假设使用 VDI 平台 Host
+        let host = self
+            .client
+            .base_url()
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .split(':')
+            .next()
+            .unwrap_or("localhost")
+            .to_string();
+
+        Ok(SpiceConnectionInfo {
+            host,
+            port,
+            tls_port,
+            password: if password.is_empty() {
+                None
+            } else {
+                Some(password)
+            },
+        })
     }
 
     /// 获取虚拟机 XML
     pub async fn get_xml(&self, domain_id: &str) -> Result<String> {
         info!("获取虚拟机 XML: {}", domain_id);
-        let response: serde_json::Value = self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/xml", domain_id),
-            None::<()>,
-        ).await?;
+        let response: serde_json::Value = self
+            .client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/xml", domain_id),
+                None::<()>,
+            )
+            .await?;
         Ok(response["xml"].as_str().unwrap_or("").to_string())
     }
 
     /// 获取虚拟机进程列表
     pub async fn get_task_manager(&self, domain_id: &str) -> Result<Vec<serde_json::Value>> {
         info!("获取虚拟机进程列表: {}", domain_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/task-manager", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/task-manager", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 同步虚拟机状态
     pub async fn sync_status(&self, domain_id: &str) -> Result<()> {
         info!("同步虚拟机状态: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/sync-status", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/sync-status", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 虚拟机转模板
     pub async fn to_model(&self, domain_id: &str) -> Result<()> {
         info!("虚拟机转模板: {}", domain_id);
-        self.client.request(
-            Method::POST,
-            &format!("/ocloud/v1/domain/{}/to-model", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::POST,
+                &format!("/ocloud/v1/domain/{}/to-model", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 修改单个虚拟机配置
     pub async fn update(&self, domain_id: &str, config: serde_json::Value) -> Result<()> {
         info!("修改虚拟机配置: {}", domain_id);
-        self.client.request(
-            Method::PATCH,
-            &format!("/ocloud/v1/domain/{}", domain_id),
-            Some(config),
-        ).await
+        self.client
+            .request(
+                Method::PATCH,
+                &format!("/ocloud/v1/domain/{}", domain_id),
+                Some(config),
+            )
+            .await
     }
 
     /// 获取在线用户及其虚机列表
     pub async fn get_active_users(&self) -> Result<Vec<serde_json::Value>> {
         info!("获取在线用户及虚机列表");
-        self.client.request(
-            Method::GET,
-            "/ocloud/v1/domain/active-user",
-            None::<()>,
-        ).await
+        self.client
+            .request(Method::GET, "/ocloud/v1/domain/active-user", None::<()>)
+            .await
     }
 
     /// 获取虚拟机代理版本列表
     pub async fn get_agent_versions(&self) -> Result<Vec<serde_json::Value>> {
         info!("获取虚拟机代理版本列表");
-        self.client.request(
-            Method::GET,
-            "/ocloud/v1/domain/agent-version",
-            None::<()>,
-        ).await
+        self.client
+            .request(Method::GET, "/ocloud/v1/domain/agent-version", None::<()>)
+            .await
     }
 
     /// 查询虚拟机的存储池交集
-    pub async fn get_common_storage_pool(&self, id_list: Vec<String>) -> Result<Vec<serde_json::Value>> {
+    pub async fn get_common_storage_pool(
+        &self,
+        id_list: Vec<String>,
+    ) -> Result<Vec<serde_json::Value>> {
         info!("查询虚拟机存储池交集: {} 个", id_list.len());
         let ids = id_list.join(",");
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/common-storage-pool?ids={}", ids),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/common-storage-pool?ids={}", ids),
+                None::<()>,
+            )
+            .await
     }
 
     /// 获取用户统计数据
     pub async fn get_user_stat(&self) -> Result<serde_json::Value> {
         info!("获取用户统计数据");
-        self.client.request(
-            Method::GET,
-            "/ocloud/v1/domain/user-stat",
-            None::<()>,
-        ).await
+        self.client
+            .request(Method::GET, "/ocloud/v1/domain/user-stat", None::<()>)
+            .await
     }
 
     /// 启动虚拟机之前获取 IP 展示
     pub async fn get_ip_preview(&self, domain_id: &str) -> Result<Vec<serde_json::Value>> {
         info!("获取虚拟机 IP 预览: {}", domain_id);
-        self.client.request(
-            Method::GET,
-            &format!("/ocloud/v1/domain/{}/ip-all", domain_id),
-            None::<()>,
-        ).await
+        self.client
+            .request(
+                Method::GET,
+                &format!("/ocloud/v1/domain/{}/ip-all", domain_id),
+                None::<()>,
+            )
+            .await
     }
 
     /// 导入虚拟机
     pub async fn import_domain(&self, config: serde_json::Value) -> Result<()> {
         info!("导入虚拟机");
-        self.client.request(
-            Method::POST,
-            "/ocloud/v1/domain/import",
-            Some(config),
-        ).await
+        self.client
+            .request(Method::POST, "/ocloud/v1/domain/import", Some(config))
+            .await
     }
 
     /// 重命名虚拟机
@@ -1033,9 +1197,14 @@ impl<'a> DomainApi<'a> {
         config["name"] = serde_json::Value::String(new_name.to_string());
 
         let token = self.client.get_token().await?;
-        let response: serde_json::Value = self.client
+        let response: serde_json::Value = self
+            .client
             .http_client()
-            .patch(format!("{}/ocloud/v1/domain/{}", self.client.base_url(), domain_id))
+            .patch(format!(
+                "{}/ocloud/v1/domain/{}",
+                self.client.base_url(),
+                domain_id
+            ))
             .header("Token", &token)
             .header("Content-Type", "application/json")
             .json(&config)
@@ -1067,9 +1236,14 @@ impl<'a> DomainApi<'a> {
         config["autoJoinDomain"] = serde_json::Value::Number(enabled.into());
 
         let token = self.client.get_token().await?;
-        let response: serde_json::Value = self.client
+        let response: serde_json::Value = self
+            .client
             .http_client()
-            .patch(format!("{}/ocloud/v1/domain/{}", self.client.base_url(), domain_id))
+            .patch(format!(
+                "{}/ocloud/v1/domain/{}",
+                self.client.base_url(),
+                domain_id
+            ))
             .header("Token", &token)
             .header("Content-Type", "application/json")
             .json(&config)
@@ -1088,4 +1262,3 @@ impl<'a> DomainApi<'a> {
         Ok(())
     }
 }
-

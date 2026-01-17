@@ -184,7 +184,10 @@ impl ChannelConnection {
         let header = SpiceLinkHeader::new(link_data.len() as u32);
 
         // 发送头部和消息
-        let writer = self.writer.as_ref().unwrap();
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
         let mut writer_guard = writer.lock().await;
 
         writer_guard
@@ -204,7 +207,10 @@ impl ChannelConnection {
         trace!("发送 SPICE Link 消息");
 
         // 2. 接收服务器回复
-        let reader = self.reader.as_ref().unwrap();
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
         let mut reader_guard = reader.lock().await;
 
         // 读取链接头部
@@ -261,103 +267,103 @@ impl ChannelConnection {
     }
 
     /// 发送认证信息
-    async fn send_auth(&mut self, _password: &str, _pub_key: &[u8]) -> Result<()> {
-        // TODO: 实现 RSA 加密密码
-        //
-        // 参考实现：spice-gtk/src/channel-main.c 中的 spice_channel_send_link_ack()
-        //
-        // 1. 解析服务器提供的 RSA 公钥（DER 格式）
-        //    - pub_key 字段包含 SPICE_TICKET_PUBKEY_BYTES (162 字节) 的 RSA 公钥
-        //    - 使用 rsa crate: use rsa::RsaPublicKey;
-        //    - 解析方法：
-        //      ```rust
-        //      use rsa::pkcs1::DecodeRsaPublicKey;
-        //      let public_key = RsaPublicKey::from_pkcs1_der(_pub_key)
-        //          .map_err(|e| ProtocolError::ParseError(format!("解析 RSA 公钥失败: {}", e)))?;
-        //      ```
-        //
-        // 2. 准备密码票据（128 字节缓冲区）
-        //    - 创建 [u8; 128] 数组，初始化为 0
-        //    - 将密码字符串拷贝到缓冲区前面（最多 127 字节，保留一个 \0 结尾）
-        //    - 剩余部分用随机数填充以增强安全性
-        //      ```rust
-        //      use rand::RngCore;
-        //      let mut ticket = [0u8; 128];
-        //      let pwd_bytes = _password.as_bytes();
-        //      let copy_len = std::cmp::min(pwd_bytes.len(), 127);
-        //      ticket[..copy_len].copy_from_slice(&pwd_bytes[..copy_len]);
-        //      // ticket[copy_len] = 0; // null terminator (already 0)
-        //      if copy_len < 127 {
-        //          rand::thread_rng().fill_bytes(&mut ticket[copy_len+1..]);
-        //      }
-        //      ```
-        //
-        // 3. 使用 RSA-OAEP 加密票据
-        //    - 使用 SHA-1 作为哈希函数（SPICE 协议规范）
-        //    - 使用 rsa crate 的 Oaep 填充：
-        //      ```rust
-        //      use rsa::{Oaep, sha1::Sha1};
-        //      use rand::thread_rng;
-        //
-        //      let padding = Oaep::new::<Sha1>();
-        //      let mut rng = thread_rng();
-        //      let encrypted_ticket = public_key.encrypt(&mut rng, padding, &ticket)
-        //          .map_err(|e| ProtocolError::ConnectionFailed(format!("RSA 加密失败: {}", e)))?;
-        //      ```
-        //
-        // 4. 发送加密后的票据（128 字节）
-        //    - 加密后的数据大小应该等于 RSA 密钥大小（通常 128 字节）
-        //    - 如果加密结果不足 128 字节，需要左侧填充 0
-        //      ```rust
-        //      let writer = self.writer.as_ref().unwrap();
-        //      let mut writer_guard = writer.lock().await;
-        //
-        //      // 确保是 128 字节
-        //      let mut final_ticket = [0u8; 128];
-        //      let offset = 128 - encrypted_ticket.len();
-        //      final_ticket[offset..].copy_from_slice(&encrypted_ticket);
-        //
-        //      writer_guard.write_all(&final_ticket).await
-        //          .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        //      writer_guard.flush().await
-        //          .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
-        //      drop(writer_guard);
-        //      ```
-        //
-        // 5. 读取认证结果（与 send_empty_auth 相同）
-        //    - 接收 4 字节的认证结果
-        //    - 0 表示成功，非 0 表示失败
-        //      ```rust
-        //      let reader = self.reader.as_ref().unwrap();
-        //      let mut reader_guard = reader.lock().await;
-        //      let mut result = [0u8; 4];
-        //      reader_guard.read_exact(&mut result).await
-        //          .map_err(|e| ProtocolError::ReceiveFailed(format!("读取认证结果失败: {}", e)))?;
-        //      let auth_result = u32::from_le_bytes(result);
-        //      if auth_result != 0 {
-        //          return Err(ProtocolError::ConnectionFailed(
-        //              format!("SPICE 认证失败，错误码: {}", auth_result)
-        //          ));
-        //      }
-        //      debug!("SPICE RSA 认证成功");
-        //      ```
-        //
-        // 需要添加的依赖到 Cargo.toml:
-        //   rsa = "0.9"
-        //   rand = "0.8"
-        //   sha1 = "0.10"
-        //
-        // 参考资料：
-        //   - spice-protocol/spice/protocol.h: SPICE_TICKET_PUBKEY_BYTES 定义
-        //   - spice-gtk/src/channel-main.c: spice_channel_send_link_ack() 函数
+    async fn send_auth(&mut self, password: &str, pub_key: &[u8]) -> Result<()> {
+        use rand::RngCore;
+        use rsa::{pkcs1::DecodeRsaPublicKey, Oaep, RsaPublicKey};
+        use sha1::Sha1;
 
-        // 目前发送空认证（假设服务器不需要密码）
-        self.send_empty_auth().await
+        debug!("执行 RSA 认证，密码长度: {}", password.len());
+
+        // 1. 解析 RSA 公钥 (DER/PKCS#1 格式, 162 bytes)
+        let public_key = RsaPublicKey::from_pkcs1_der(pub_key)
+            .map_err(|e| ProtocolError::ParseError(format!("解析 RSA 公钥失败: {}", e)))?;
+
+        // 2. 准备密码票据 (128 字节)
+        let mut ticket = [0u8; 128];
+        let pwd_bytes = password.as_bytes();
+        let copy_len = std::cmp::min(pwd_bytes.len(), 127);
+        ticket[..copy_len].copy_from_slice(&pwd_bytes[..copy_len]);
+        // 最后一字节保留为 0 (null terminator)
+
+        // 剩余部分用随机数填充
+        if copy_len < 127 {
+            let mut rng = rand::thread_rng();
+            rng.fill_bytes(&mut ticket[copy_len + 1..]);
+        }
+
+        // 3. 使用 RSA-OAEP 加密票据
+        // SPICE 协议规定使用 OAEP padding with SHA1
+        let encrypted_ticket = {
+            let padding = Oaep::new::<Sha1>();
+            let mut rng = rand::thread_rng();
+            public_key
+                .encrypt(&mut rng, padding, &ticket)
+                .map_err(|e| ProtocolError::ConnectionFailed(format!("RSA 加密失败: {}", e)))?
+        };
+
+        // 4. 发送加密后的票据（128 字节）
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
+        let mut writer_guard = writer.lock().await;
+
+        // 如果加密结果不足 128 字节，需要左侧填充 0 (通常 RSA 1024 加密结果就是 128 字节)
+        let mut final_ticket = [0u8; 128];
+        if encrypted_ticket.len() <= 128 {
+            let offset = 128 - encrypted_ticket.len();
+            final_ticket[offset..].copy_from_slice(&encrypted_ticket);
+        } else {
+            return Err(ProtocolError::ConnectionFailed(format!(
+                "加密结果过长: {}",
+                encrypted_ticket.len()
+            )));
+        }
+
+        writer_guard
+            .write_all(&final_ticket)
+            .await
+            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
+        writer_guard
+            .flush()
+            .await
+            .map_err(|e| ProtocolError::SendFailed(e.to_string()))?;
+        drop(writer_guard);
+
+        trace!("已发送 RSA 加密认证票据");
+
+        // 5. 读取认证结果
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
+        let mut reader_guard = reader.lock().await;
+
+        let mut result = [0u8; 4];
+        reader_guard
+            .read_exact(&mut result)
+            .await
+            .map_err(|e| ProtocolError::ReceiveFailed(format!("读取认证结果失败: {}", e)))?;
+
+        let auth_result = u32::from_le_bytes(result);
+        if auth_result != 0 {
+            return Err(ProtocolError::ConnectionFailed(format!(
+                "SPICE 认证失败，错误码: {}",
+                auth_result
+            )));
+        }
+
+        debug!("SPICE RSA 认证成功");
+
+        Ok(())
     }
 
     /// 发送空认证
     async fn send_empty_auth(&mut self) -> Result<()> {
-        let writer = self.writer.as_ref().unwrap();
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
         let mut writer_guard = writer.lock().await;
 
         // 发送 128 字节的空票据
@@ -374,7 +380,10 @@ impl ChannelConnection {
         // 读取认证结果
         drop(writer_guard);
 
-        let reader = self.reader.as_ref().unwrap();
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| ProtocolError::ConnectionFailed("通道未连接".to_string()))?;
         let mut reader_guard = reader.lock().await;
 
         let mut result = [0u8; 4];

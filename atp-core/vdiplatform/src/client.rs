@@ -1,16 +1,16 @@
 //! VDI 平台客户端核心实现
 
+use reqwest::{Client, Method};
+use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use reqwest::{Client, Method};
-use serde::{Serialize, de::DeserializeOwned};
 use tracing::{debug, info, warn};
 
-use crate::error::{VdiError, Result};
 use crate::api::{
-    DomainApi, DeskPoolApi, HostApi, ModelApi, UserApi, GroupApi,
-    SnapshotApi, StorageApi, NetworkApi, EventApi, RecycleApi,
+    DeskPoolApi, DomainApi, EventApi, GroupApi, HostApi, ModelApi, NetworkApi, RecycleApi,
+    SnapshotApi, StorageApi, UserApi,
 };
+use crate::error::{Result, VdiError};
 
 /// VDI 平台客户端配置
 #[derive(Debug, Clone)]
@@ -90,14 +90,17 @@ impl VdiClient {
             "client": ""
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&login_url)
             .json(&login_data)
             .send()
             .await
             .map_err(|e| VdiError::HttpError(e.to_string()))?;
 
-        let login_result: serde_json::Value = response.json().await
+        let login_result: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| VdiError::ParseError(e.to_string()))?;
 
         // 检查登录状态
@@ -119,7 +122,7 @@ impl VdiClient {
     }
 
     /// 注销登出
-    pub async fn logout(&mut self) -> Result<()> {
+    pub async fn logout(&self) -> Result<()> {
         info!("VDI 客户端登出");
         *self.access_token.write().await = None;
         Ok(())
@@ -191,10 +194,12 @@ impl VdiClient {
         debug!("VDI API 请求: {} {}", method, url);
 
         let token = self.access_token.read().await;
-        let token_str = token.as_ref()
+        let token_str = token
+            .as_ref()
             .ok_or_else(|| VdiError::AuthError("未认证，请先登录".to_string()))?;
 
-        let mut request = self.http_client
+        let mut request = self
+            .http_client
             .request(method.clone(), &url)
             .header("Token", token_str)
             .header("Content-Type", "application/json");
@@ -203,18 +208,24 @@ impl VdiClient {
             request = request.json(&body);
         }
 
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .map_err(|e| VdiError::HttpError(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await
+            let error_text = response
+                .text()
+                .await
                 .unwrap_or_else(|_| "无法读取错误响应".to_string());
             warn!("API 请求失败: {} - {}", status, error_text);
             return Err(VdiError::ApiError(status.as_u16(), error_text));
         }
 
-        let result = response.json::<R>().await
+        let result = response
+            .json::<R>()
+            .await
             .map_err(|e| VdiError::ParseError(e.to_string()))?;
 
         Ok(result)
@@ -233,7 +244,8 @@ impl VdiClient {
     /// 获取当前访问令牌
     pub async fn get_token(&self) -> Result<String> {
         let token = self.access_token.read().await;
-        token.clone()
+        token
+            .clone()
             .ok_or_else(|| VdiError::AuthError("未认证，请先登录".to_string()))
     }
 }
@@ -244,10 +256,7 @@ mod tests {
 
     #[test]
     fn test_vdi_client_creation() {
-        let client = VdiClient::new(
-            "http://192.168.1.11:8088",
-            VdiConfig::default()
-        );
+        let client = VdiClient::new("http://192.168.1.11:8088", VdiConfig::default());
         assert!(client.is_ok());
     }
 }
